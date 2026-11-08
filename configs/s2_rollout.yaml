@@ -1,0 +1,7 @@
+# S2: + 2-step rollout loss (exact masked second pass through the main network)
+base: s1_tf_online.yaml
+group: S2-rollout
+name: s2_tf_r_online
+tags: [hnet, latent, tf, rollout]
+latent:
+  beta_r: 1.0

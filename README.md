@@ -1,0 +1,62 @@
+# latents — H-Net → JEPA-style latent prediction over dynamic chunks
+
+**Goal.** Show results for a "latent-style" H-Net: the main network acts as a predictor over the
+H-Net's dynamic chunks and is trained V-JEPA 2-AC style. It predicts the next chunk's representation
+from an EMA target encoder, with an L1 teacher-forcing loss plus a 2-step rollout loss:
+
+```
+L_TF = Σ_j ‖P(c_≤j) − sg(c̄_{j+1})‖₁        L_R = ‖P(c_≤j, ĉ_{j+1}) − sg(c̄_{j+2})‖₁,  ĉ_{j+1} = P(c_≤j)
+```
+
+## Ground rules (from the project brief)
+1. First **reproduce H-Net at small scale** and match the best published small-scale results.
+2. Then move toward the final setup **one small change at a time**. Each change is trained and
+   compared against the previous step, and kept only if it helps (or its cost is understood and logged).
+3. Log everything that matters, but not more than that:
+   - W&B project `hnet-latents` (team entity `ahilan-uc-berkeley-electrical-engineering-computer-sciences`)
+   - HF model repo [`a5ilank/hnet-latents`](https://huggingface.co/a5ilank/hnet-latents), one folder per run: `runs/<name>/`
+   - [`logistics.md`](logistics.md): a timestamped log of what was tried and what worked or didn't
+4. Any new dependency goes into `setup.sh`, which is what a fresh pod runs.
+
+## Plan
+| Phase | Change vs previous | Pass criterion |
+|---|---|---|
+| **S0** reproduce | Compute-matched (~2.3e17 FLOPs, 3B bytes of FineWeb-Edu) BPE Transformer vs isotropic byte Transformer vs H-Net (pool) vs H-Net 1-stage (DC) | Paper ordering: H-Net ≈ BPE < pool < byte-isotropic in val BPB. Learned compression ≈ 1/N. Gaps comparable to main-horse's small-scale sweep / paper Table 2 |
+| **S1** latent aux | + teacher-forced latent loss `L_TF` (main net → next-chunk rep), first with stop-grad online targets, then EMA targets | BPB not worse than S0 H-Net; latent loss ↓; no collapse (target std / eff. rank) |
+| **S2** rollout | + 2-step rollout loss `L_R` (flex-attention masked second pass) | rollout error ↓ without hurting BPB/`L_TF` |
+| **S3** cut top half | main net trained by latent losses only (AR gradient stopped at main net); decoder reads the predicted next-chunk latent | quantify the cost: BPB and latent metrics vs joint S1/S2 + zero-context control |
+
+## Findings so far (0.6B bytes, val BPB on FineWeb-Edu; seed noise ≈ ±0.003, latent runs with rollout ≈ ±0.013)
+- **Pipeline check:** official `hnet_1stage_L` on our val = 0.756 (paper 0.755).
+- **S0 at small scale:** BPE 1.191 < byte Transformer 1.347 < H-Net 1.372 ≈ pool 1.375. The main net adds only 0.038 BPB (zero-main control 1.411).
+- **S1 ✅ teacher-forced latent loss** (next-chunk L1 vs stop-grad/EMA(0.99) targets): 1.343–1.350, about −0.025 BPB, robust over settings. A compression-matched control rules out chunk size as the cause.
+  It can also induce word-aligned chunks; word alignment tracks latent quality, not BPB.
+- **S2 rollout:** with full gradients it hurts. With predictor-only gradients (V-JEPA 2-AC style) it is BPB-neutral on average, but it bifurcates across seeds (best: cos 0.73, word-aligned chunks).
+- **S3 latent-style model** (predictor trained only in latent space, decoder reads predicted latents): 1.404 vs joint 1.365.
+  Most of that cost (0.031) is the latent bottleneck; dropping AR gradients costs only 0.008.
+- **Hillclimb (Nov 8):** EMA(0.99) targets + **MLP predictor head** + more, smaller chunks (N=5) + shallower main net (T7).
+  **1.285** (2-seed mean) at the byte Transformer's FLOPs: −0.088 vs H-Net and −0.062 vs the byte Transformer.
+  Every step holds when paired by seed. Rejected: LN targets, extra horizons, β≥1 with a linear head.
+  The no-latent control with the same architecture gets 1.362, so the gain is from the latent loss.
+- **3B bytes (2 seeds):** final **1.107 ± 0.001** vs H-Net 1.275, byte Transformer 1.232, BPE 1.082 (closes ~87% of the H-Net→BPE gap).
+  ⚠️ The no-latent control with the same architecture gets 1.136 @3B. So at 3B, most of the gain is the hillclimbed architecture (finer chunks N=5, shallower main: −0.139).
+  The latent loss adds −0.029 (at +11–18% FLOPs from even finer chunks). At 0.6B the split was reversed (−0.010 arch, −0.089 latent). Causality verified (`tests/test_causality2.py`).
+Details and per-run notes: [`logistics.md`](logistics.md).
+
+## Layout
+```
+latents/            prepare_data.py (FineWeb-Edu → byte + GPT-2 streams), models.py (official H-Net wrapper),
+                    train.py (trainer + logging), latent.py (JEPA objectives), flops.py (FLOPs accounting)
+configs/            base.yaml + one yaml per experiment (inheritance via `base:`)
+scripts/            run_queue.sh (run a list of jobs), status.py (progress table), <phase>.txt job lists
+tests/              test_equiv.py (our forward == official H-Net forward)
+third_party/hnet    official goombalab/hnet @ 3673fe1 (installed by setup.sh)
+```
+
+## Usage
+```bash
+bash setup.sh                                   # deps, pinned kernels, official H-Net, data (SKIP_DATA=1 to skip)
+python -m latents.train configs/s0_hnet.yaml    # any key can be overridden: train.lr=1e-3 name=foo
+scripts/run_queue.sh scripts/s0_main.txt 1      # run a phase's jobs (1 at a time is fastest on 1 GPU)
+python scripts/status.py                        # progress / final val BPB of local runs
+```

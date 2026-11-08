@@ -1,0 +1,9 @@
+.env
+data/
+runs/
+logs/
+third_party/
+wandb/
+__pycache__/
+*.egg-info/
+*.pt

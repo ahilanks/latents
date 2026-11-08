@@ -1,0 +1,8 @@
+# S1a: + teacher-forced latent loss, stop-grad *online* encoder targets
+base: s0_hnet.yaml
+group: S1-latent
+name: s1a_tf_online
+tags: [hnet, latent, tf]
+latent:
+  target: online
+  beta_tf: 1.0

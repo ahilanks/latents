@@ -1,0 +1,3 @@
+# S1a latent-loss weight sweep @0.6B (beta_tf=1 -> 1.3502)
+python -m latents.train configs/s1_tf_online.yaml name=s1a_tf_online_b03 latent.beta_tf=0.3 train.lr=2e-3 train.total_bytes=6e8 train.eval_every=1000
+python -m latents.train configs/s1_tf_online.yaml name=s1a_tf_online_b3 latent.beta_tf=3.0 train.lr=2e-3 train.total_bytes=6e8 train.eval_every=1000

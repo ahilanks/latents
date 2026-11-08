@@ -1,0 +1,13 @@
+base: base.yaml
+name: s0_bytetf_d384T5
+tags: [baseline, byte-isotropic]
+model:
+  tokenizer: bytes
+  arch_layout: ["T5"]
+  d_model: [384]
+  d_intermediate: [1024]
+  num_heads: [6]
+  rotary_emb_dim: [32]
+  window_size: [1023]
+train:
+  micro_batch: 16

@@ -1,0 +1,5 @@
+# Hillclimb round B @0.6B (group HC-B): byte-level encoder/decoder architecture (FLOP-matched ~24-26 MFLOP/byte), latent base = hc_best = EMA 0.99 beta 0.3 (hcA1 1.3224)
+python -m latents.train configs/hc_best.yaml group=HC-B name=hcB1_m3t1_T9 'model.arch_layout=[m3t1, [T9], t1m3]'
+python -m latents.train configs/hc_best.yaml group=HC-B name=hcB2_m2T1_T9 'model.arch_layout=[m2T1, [T9], T1m2]' 'model.d_intermediate=[688, 1408]'
+python -m latents.train configs/hc_best.yaml group=HC-B name=hcB3_T2_T9 'model.arch_layout=[T2, [T9], T2]' 'model.d_intermediate=[688, 1408]'
+python -m latents.train configs/hc_best.yaml group=HC-B name=hcB4_N4_T6 model.N=4 'model.arch_layout=[m4, [T6], m4]'

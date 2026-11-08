@@ -1,0 +1,6 @@
+# S0 short-budget suite @0.6B bytes, batch 262k bytes (group S0-short)
+python -m latents.train configs/s0_hnet.yaml group=S0-short name=s0s_hnet_wd0 train.lr=2e-3 train.wd=0.0 train.total_bytes=6e8 train.eval_every=1000
+python -m latents.train configs/s0_bpe.yaml group=S0-short name=s0s_bpe_lr8e-3 train.lr=8e-3 train.total_bytes=6e8 train.eval_every=1000
+python -m latents.train configs/s0_bytes.yaml group=S0-short name=s0s_bytes_lr2e-3 train.lr=2e-3 train.total_bytes=6e8 train.eval_every=1000
+python -m latents.train configs/s0_bytes.yaml group=S0-short name=s0s_bytes_lr4e-3 train.lr=4e-3 train.total_bytes=6e8 train.eval_every=1000
+python -m latents.train configs/s0_pool.yaml group=S0-short name=s0s_pool_lr2e-3 train.lr=2e-3 train.total_bytes=6e8 train.eval_every=1000

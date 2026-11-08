@@ -1,0 +1,5 @@
+# Hillclimb round A @0.6B (group HC-A): latent-objective knobs on top of s1b2 (EMA 0.99, beta 1) = 1.3470
+python -m latents.train configs/s1_tf_ema.yaml group=HC-A name=hcA1_ema_b03 latent.beta_tf=0.3 train.lr=2e-3 train.total_bytes=6e8 train.eval_every=1000
+python -m latents.train configs/s1_tf_ema.yaml group=HC-A name=hcA2_ema_lntgt latent.target_norm=ln train.lr=2e-3 train.total_bytes=6e8 train.eval_every=1000
+python -m latents.train configs/s1_tf_ema.yaml group=HC-A name=hcA3_ema_h2 'latent.extra_horizons=[2]' train.lr=2e-3 train.total_bytes=6e8 train.eval_every=1000
+python -m latents.train configs/s1_tf_ema.yaml group=HC-A name=hcA4_ema_mlphead latent.head=mlp train.lr=2e-3 train.total_bytes=6e8 train.eval_every=1000

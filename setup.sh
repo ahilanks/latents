@@ -229,6 +229,45 @@ ENV_EOF
     fi
 }
 
+ensure_ml_stack() {
+    # Prebuilt wheels for torch 2.8 / CUDA 12 / cp312, installed with --no-deps so pip can never
+    # replace the pod's torch (an unpinned `pip install mamba-ssm` pulls torch 2.15+cu13 and breaks it).
+    python3 -c "import torch,sys; sys.exit(0 if torch.__version__.startswith('2.8.0') else 1)" || {
+        echo "  torch != 2.8.0 -> installing torch 2.8.0+cu128"
+        python3 -m pip install torch==2.8.0 torchvision==0.23.0 torchaudio==2.8.0 triton==3.4.0 \
+            --index-url https://download.pytorch.org/whl/cu128
+    }
+    local gh=https://github.com tag=cu12torch2.8cxx11abiTRUE-cp312-cp312-linux_x86_64
+    python3 -c "import mamba_ssm, causal_conv1d, flash_attn" 2>/dev/null || python3 -m pip install --no-deps \
+        "${gh}/Dao-AILab/causal-conv1d/releases/download/v1.5.2/causal_conv1d-1.5.2+${tag}.whl" \
+        "${gh}/state-spaces/mamba/releases/download/v2.2.5/mamba_ssm-2.2.5+${tag}.whl" \
+        "${gh}/Dao-AILab/flash-attention/releases/download/v2.8.3/flash_attn-2.8.3+${tag}.whl"
+    # mamba-ssm 2.2.5 imports old transformers names; latents/__init__.py shims them. A modern
+    # transformers would break that import, so keep it uninstalled.
+    python3 -m pip uninstall -y transformers >/dev/null 2>&1 || true
+    # Official H-Net (goombalab/hnet), pinned commit.
+    mkdir -p third_party
+    if [[ ! -d third_party/hnet ]]; then
+        git clone -q https://github.com/goombalab/hnet.git third_party/hnet
+    fi
+    git -C third_party/hnet checkout -q 3673fe1217ebeb0d1438c7c71d58d32bdd190ec2
+    python3 -m pip install --no-deps -e third_party/hnet
+    python3 -m pip install --no-deps -e .   # re-link project after kernels (no torch changes)
+    python3 -c "import latents, mamba_ssm, flash_attn; from hnet.models.mixer_seq import HNetForCausalLM; print('  ML stack OK')"
+}
+
+ensure_data() {
+    # ~8.6GB download + ~10 min tokenization (128 cores). Skip with SKIP_DATA=1.
+    if [[ "${SKIP_DATA:-0}" == "1" ]]; then echo "  SKIP_DATA=1, skipping"; return; fi
+    if [[ -f data/fwe/train.u8 && -f data/fwe/val.u8 ]]; then echo "  data/fwe already prepared"; return; fi
+    python3 -c "
+from huggingface_hub import hf_hub_download
+for s in ['000','001','002','013']:
+    print(hf_hub_download('HuggingFaceFW/fineweb-edu', f'sample/10BT/{s}_00000.parquet', repo_type='dataset', local_dir='data/raw'))
+"
+    python3 -m latents.prepare_data
+}
+
 configure_optional_auth() {
     if have_cmd gh; then
         if [[ -n "${GH_TOKEN:-}" ]]; then
@@ -274,6 +313,14 @@ else
 fi
 
 echo ""
+echo "=== Installing GPU kernels + official H-Net (pinned) ==="
+ensure_ml_stack
+
+echo ""
+echo "=== Preparing data (FineWeb-Edu sample-10BT -> byte/GPT-2 streams) ==="
+ensure_data
+
+echo ""
 echo "=== Installing CLI tooling ==="
 ensure_node_tooling
 ensure_tmux
@@ -305,3 +352,5 @@ echo "=== Setup Complete ==="
 echo ""
 echo "Notes:"
 echo "  - .env is auto-loaded by setup (WANDB_API_KEY, HF_TOKEN, GH_TOKEN, optional PUSHOVER_*)"
+echo "  - train: python -m latents.train configs/<cfg>.yaml [key=value ...]   (see README.md)"
+echo "  - queue: scripts/run_queue.sh scripts/<phase>.txt 1 ; progress: python scripts/status.py"

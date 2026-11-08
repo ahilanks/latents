@@ -1,0 +1,3 @@
+# 3B references: BPE Transformer (does the latent H-Net reach BPE parity?), then the no-latent control on the final architecture
+python -m latents.train configs/s0_bpe.yaml group=Final-3B name=s0_bpe_d512T8 train.lr=4e-3
+python -m latents.train configs/s0_hnet.yaml group=Final-3B name=f3_plain_N5_T7_s0 model.N=5 model.arch_layout=[m4,[T7],m4] train.lr=2e-3

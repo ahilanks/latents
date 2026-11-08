@@ -1,0 +1,5 @@
+# S3d: joint control for S3b: decoder reads head(P(c<=j)), with the AR gradient flowing through it (no detach).
+base: s3_latent_decode.yaml
+name: s3d_joint_decode_pred
+latent:
+  detach_main: false

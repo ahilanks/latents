@@ -1,0 +1,10 @@
+# S1b: + teacher-forced latent loss, EMA target encoder (tau 0.99 constant; 0.996->1 cosine was worse: s1b_tf_ema)
+base: s0_hnet.yaml
+group: S1-latent
+name: s1b_tf_ema
+tags: [hnet, latent, tf, ema]
+latent:
+  target: ema
+  beta_tf: 1.0
+  ema_tau: 0.99
+  ema_tau_end: 0.99

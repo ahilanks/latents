@@ -1,0 +1,214 @@
+# Logistics: what was done, when, and what worked
+
+Times are UTC. ✅ worked · ❌ didn't work · ⚠️ caveat. Run names match W&B (`hnet-latents`) and the HF folders `runs/<name>`.
+
+## 2026-11-07
+
+**21:20 setup.** 1× A100-80GB, torch 2.8.0+cu128. Created **new** W&B project `hnet-latents` in team
+entity `ahilan-uc-berkeley-electrical-engineering-computer-sciences` (the personal entity `models` is empty;
+your other projects live in the team). Created **new** private HF model repo `a5ilank/hnet-latents`.
+
+**21:25 reference choice.** Paper (Hwang, Wang & Gu 2025) only reports ≥760M-scale text results.
+The best small-scale reproduction is main-horse's FLOP-matched sweep on FineWeb-10BT
+(H-Net byte vs BPE at 1e16–1e18 FLOPs). Byte-vs-BPE BPB: 3e17 → 1.2125 vs 1.2060; 1e18 → 1.1272 vs 1.1130,
+i.e. H-Net ≈ BPE within ~0.01 at this scale. Paper Table 2 (Large) gives the ordering:
+BPE 0.756 ≈ H-Net-1s 0.755 < pool 0.780 < byte-isotropic 0.845–0.859.
+⇒ **S0 target**: reproduce that ordering and those gaps on FineWeb-Edu at ~2.3e17 train FLOPs.
+
+**21:30 ❌ install.** A plain `pip install mamba-ssm` upgraded torch to 2.15+cu13 and broke the env.
+Reverted to torch 2.8.0. ✅ Fix: install prebuilt wheels with `--no-deps`
+(causal-conv1d 1.5.2, mamba-ssm 2.2.5, flash-attn 2.8.3 for cu12/torch2.8/cp312). Building from source
+took far too long, and mamba-ssm 2.2.6 has no torch-2.8 wheel. mamba-ssm 2.2.5 imports old `transformers`
+names; ✅ an inert shim in `latents/__init__.py` covers them, so hub/tokenizers aren't downgraded. All of this is in `setup.sh`.
+
+**21:40 data ✅.** FineWeb-Edu sample-10BT shards 000–002 → 10.42B train bytes / 2.255B GPT-2 tokens
+(4.62 bytes/token; the paper uses 4.6). Val = the first 1702 docs of shard 013 (8.0MB), the same docs in both streams.
+BPB for BPE uses the exact byte length of each predicted token.
+
+**21:45 model code ✅.** Uses the official goombalab/hnet modules (Mamba2 enc/dec, routing, chunk/dechunk,
+STE, residual proj, init, LR multipliers eq. 11). `forward_lm` re-implements the 1-stage forward to
+expose chunks. `tests/test_equiv.py`: identical boundaries and 0.3% mean rel. logit diff vs official (bf16 noise).
+⚠️ The official *packed* path asserts `max_seqlen` is an int but passes a tensor, so it's unusable as-is;
+the masked path is used as the reference.
+
+**21:50 S0 configs** (fwd MFLOP/byte ≈ 25, 3B bytes, batch 32×8192 bytes, AdamW β=(.9,.95) wd .1, WSD 10/70/20 with 1-sqrt cooldown):
+BPE d512·T8 (ctx 1792 tok) · byte-isotropic d384·T5 (SWA 1024) · H-Net D=[256,512] m4–T9–m4, N=6, α=.03 ·
+H-Net-pool k=6 m4–T11–m4. Speed alone: BPE .20, bytes .17, pool .30, H-Net .33 s/step.
+❌ 3 concurrent jobs → 1.2 s/step each (slower in total than serial) and OOM at micro-batch 32. ✅ micro-batch 16 for H-Net, run serially.
+
+**21:57–23:11 S0 LR sweep** (0.6B bytes, batch 262k bytes ≈ 2.3k steps; group `S0-lrsweep`), final val BPB:
+H-Net lr 1e-3 / 2e-3 / 4e-3 → 1.4287 / **1.3721** / 1.3747 · BPE lr 1e-3 / 2e-3 → 1.2257 / **1.2076**.
+❌ **H-Net lags BPE by 0.165 BPB** (main-horse saw ~0.01 at similar FLOPs). The gap closes only slowly over training (0.19 → 0.17 → 0.165).
+
+**23:20 ✅ eval sanity check.** Official pretrained `cartesia-ai/hnet_1stage_L` on our val: **0.7562 BPB**, L1/L0 0.205.
+The paper reports 0.755 BPB and BPIC 4.8, so data, tokenization, and BPB accounting are correct, and the gap is in training dynamics.
+Hypothesis: too few optimizer steps. main-horse's H-Nets used 22–50k-byte batches over 14–69k steps; ours had 2.3k steps.
+→ testing batch 65k bytes (`S0-batch`).
+
+**23:20–00:05 S0 batch test** (0.6B bytes; batch 8×8192 = 65k bytes, 9.2k steps; group `S0-batch`):
+H-Net lr 2e-3 / 1e-3 → 1.3680 / 1.3738 (vs 1.3721 at 262k) · BPE lr 2e-3 → 1.2369 (vs 1.2076 at 262k).
+BPE lr 4e-3 @262k → **1.1910** (BPE prefers higher LR).
+❌ More optimizer steps don't close the gap (0.13–0.18 BPB). Keeping 262k-byte batches since they're faster.
+The paper's own Fig. 3 also shows 1-stage H-Net behind BPE early in training (crossover after ~100B bytes),
+so a BPE lead at 0.6–3B bytes may be genuine. main-horse's parity used training BPB on length-sorted FineWeb with his own FLOP accounting, so it isn't directly comparable.
+
+**00:25 decision (user).** S0 result accepted as: *H-Net trails compute-matched BPE at this scale (~0.17 BPB @0.6B bytes), consistent with the paper's late crossover*.
+Next, test the within-byte-level claims (DC > pool > byte-isotropic). GPU time goes to the latent ladder,
+judged against our own H-Net baseline at the same budget and seed. S0 H-Net @0.6B: wd 0 → 1.3875 ❌ (keep wd 0.1).
+
+**00:58 S0-short summary** (0.6B bytes, ~4.4e16 FLOPs, best LR each, val BPB):
+| model | params | best LR | val BPB |
+|---|---|---|---|
+| BPE Transformer d512·T8 | 77M (51M emb/head) | 4e-3 (8e-3 → 1.567 unstable) | **1.1910** |
+| byte Transformer d384·T5, SWA1024 | 9M | 4e-3 (2e-3 → 1.3563) | **1.3473** |
+| H-Net 1-stage DC, N=6 | 33M | 2e-3 | 1.3721 |
+| H-Net pool k=6 | 37M | 2e-3 | 1.3753 |
+❌ At this budget the paper's ordering does **not** reproduce: the plain byte Transformer beats H-Net by 0.025, and DC beats pool by only 0.003 (noise TBD).
+Likely cause: H-Net is undertrained at 0.6B bytes (its main net sees ~100M chunks). The 3B-byte runs will test this.
+
+**01:13 noise.** H-Net @0.6B with seed 1 → 1.3744 (seed 0: 1.3721), so differences < ~0.005 BPB are noise (DC vs pool is a tie at 0.6B).
+
+**01:28 ✅ S1a `s1a_tf_online`** (+ L_TF = L1(head(P(c≤j)), sg(c_{j+1})), online stop-grad targets, β=1): **1.3502 val BPB**,
+−0.022 vs the H-Net baseline (≈8× noise). Side effect: chunks became word-aligned (`|Bromide| in| the |Allegheny| River|`)
+and compression relaxed 1/6 → 1/5.1 (+6% FLOPs, too small to explain the gain alone).
+Latent: val tf_l1 0.485 vs copy baseline 0.804, cos 0.56, target eff. rank 195/256 (no collapse).
+
+**01:44 S1b `s1b_tf_ema`** (EMA target encoder, τ 0.996→1 cosine): 1.3612. ✅ beats baseline (−0.011), but ❌ loses to online targets (1.3502).
+In a short run the encoder moves fast, so EMA targets go stale. → Ladder continues with **online** targets; EMA τ=0.99 retest queued.
+
+**01:59 ✅ compression control** `s1c_hnet_N5_control` (plain H-Net, N=5): 1.3809, *worse* than N=6 (1.3721).
+So S1a's gain is **not** from its lower compression; it comes from the latent objective.
+
+**02:27 ❌ S2 `s2_tf_r_online`** (+ 2-step rollout L_R, β_r=1, gradients everywhere): 1.3707 ≈ baseline, worse than S1a.
+TF cosine 0.56 → 0.36, word-aligned chunks lost, 2× step time.
+Hypothesis: the rollout gradient reaches the encoder (V-JEPA 2-AC freezes it). Next: β_r=0.25 (`s2b`) and predictor-only rollout gradients (`s2c`).
+
+**02:40 S3 control `s3c_zero_main`** (decoder gets zeros instead of main-net output): 1.4106.
+Insight: at 0.6B bytes the main network adds only **0.038 BPB** to plain H-Net (1.3721), so it is barely used.
+That explains H-Net losing to the byte Transformer here. With S1a's latent loss it adds 0.060 BPB (+60%).
+
+**02:57 ✅ S1b' `s1b2_tf_ema099`** (EMA targets, τ=0.99 constant): **1.3470**, best so far (≈ online 1.3502 within noise). Eff. rank 208, cos 0.54.
+⇒ The slow τ schedule (0.996→1) was the problem, not EMA itself. **Adopt EMA τ=0.99** (it matches the final V-JEPA design).
+
+**03:26 ❌ S2b `s2b_tf_r025`** (rollout β_r=0.25): 1.3757. Even a small rollout weight erases the S1 gain (TF cos 0.49, chunks no longer word-aligned).
+✅ `tests/test_rollout_grad.py`: rollout gradients with the mem-efficient SDPA kernel match the math kernel (identical loss, ≤4% rel. grad diff, bf16 noise), so this is not a bug.
+Hypothesis: with a trainable context encoder, L_R pushes chunk reps toward being easy to roll out. That costs byte-level info. `s2c` (predictor-only rollout grads) tests it.
+
+**03:56 ✅ S2c `s2c_tf_r_predonly`** (rollout gradients train only the predictor path: cached context + fed-back ĉ detached): **1.3524** (≈ S1a, BPB preserved).
+Latent much better: TF cos **0.73** (S1a 0.56), tf_l1 0.451, rollout L1 0.52 (S2: 0.80). Word-aligned chunks back. Eff. rank 175.
+⇒ Hypothesis confirmed: rollout must not train the context encoder (as in V-JEPA 2-AC, frozen encoder). **Adopted.**
+Next: `s2d` = EMA 0.99 + L_TF + predictor-only L_R (full joint recipe), then `s3a` = same with the main net cut off from the AR loss.
+
+**04:11 S1 β sweep** (online targets): β_tf=0.3 → **1.3425** BPB (best LM number so far) but TF cos 0.32. β=1 → 1.3502, cos 0.56.
+⚠️ BPB vs latent-quality trade-off. The final latent recipe keeps β=1; β=0.3 is the best setting if H-Net is used only as an LM.
+β_tf=3 → 1.3917 ❌ (worse than baseline). Optimal β for BPB is ≈0.3–1.
+
+**04:55 ❌? S2d `s2d_ema_tf_r_predonly`** (EMA 0.99 + L_TF + predictor-only L_R): 1.3648, worse than its parts (EMA only 1.3470; online+predonly-rollout 1.3524).
+TF cos 0.42, chunks not word-aligned. Observation: the good runs (S1a, S2c) developed word-aligned chunks and the weak ones didn't.
+This may be a stochastic bifurcation. → seed-1 replicates of S2d and S2c before choosing the 3B recipe.
+
+**05:05 chunk statistics** (`scripts/chunk_stats.py`; edge precision = share of boundaries at or right after whitespace, chance ≈0.3; space recall = share of spaces with a boundary at w/w+1):
+baseline H-Net 0.21–0.33 / 0.20–0.29 (≤ chance, mid-word) · S1a 0.62/0.67 · **S2c 0.78/0.87** · S1b 0.55/0.59 · S1b' 0.36/0.38 · β0.3 0.14/0.15 · S2d 0.27/0.28.
+⇒ The latent loss *can* induce word-like chunks (as in large pretrained H-Nets). Word alignment tracks latent cos, but **not** BPB.
+The BPB gain from L_TF holds across all 6 latent runs (1.343–1.365 vs baseline 1.372–1.374).
+
+**05:23 ❌ S3a `s3a_latent_main`** (main net trained only by latent losses; decoder reads its detached raw output): 1.4213, *worse* than the zero-main control (1.4106).
+The latent predictor itself learns (TF cos 0.41, same as joint S2d), but the decoder can't use the raw truncated output z[:, :256].
+Fix (design): the decoder should read the **prediction** ĉ_{j+1} = head(P(c≤j)), which estimates the encoder state summarising
+exactly the bytes it must emit. Added `latent.decode_from_pred`. Queued `s3b` (latent-only + decode-from-pred) and `s3d` (joint + decode-from-pred).
+
+**05:55 S2d seed 1** → 1.3676 (seed 0: 1.3648). EMA + predictor-only rollout is reproducibly worse (~1.366) than either part alone. Not a bifurcation.
+
+**06:24 ⚠️ S2c seed 1** → 1.3776 (seed 0: 1.3524). Seed 1 did *not* find word-aligned chunks (edge prec 0.49 vs 0.78; cos 0.46 vs 0.73).
+⇒ Rollout runs bifurcate. Seed means: S2c 1.365, S2d 1.366 (baseline 1.373). Rollout adds variance but no average BPB gain.
+L_TF alone is robust: 1.3425–1.3502 over 4 settings (S1a, S1b', β0.3, + S1b 1.3612). Seed replicate of S1b' queued.
+
+**06:51 ✅ S3b `s3b_latent_decode_pred`** (latent-only main net; decoder reads detached head(P(c≤j)) = predicted next-chunk latent): **1.4037**.
+That beats zero-main (1.4106) and S3a (1.4213), so the latent predictor's output becomes usable by the byte decoder (+0.007 BPB of info).
+Latent quality is up (TF cos 0.58 vs 0.41 for S3a/S2d), with word-aligned chunks (0.75/0.69).
+**Cost of cutting the top half** at 0.6B ≈ 0.04 BPB vs the joint model (S2d 1.365). Joint main-net info = 0.046 BPB vs latent-only = 0.007.
+
+**07:19 S3d `s3d_joint_decode_pred`** (joint, decoder reads head(P(c≤j))): 1.396, TF cos 0.68. Decomposition of the latent-style model's cost @0.6B:
+joint, raw z (S2d) 1.365 → **+0.031** decoder reads predicted latent (S3d) 1.396 → **+0.008** predictor trained by latent losses only (S3b) 1.404 → zero-context control 1.411.
+⇒ Most of the cost is the latent bottleneck. Removing AR gradients from the predictor costs only 0.008 BPB.
+
+**08:28 S0 @3B** `s0_hnet1s_256-512_m4T9m4` (11.4k steps, ~2.2e17 FLOPs): **1.2750** val BPB (0.6B: 1.372).
+
+**08:40 sample-efficiency estimate.** Fit H-Net baseline BPB(D) = E + A·D^−α through the cooled points (0.6B: 1.373 mean of 2 seeds; 3B: 1.275). α ≈ 0.10–0.14 for E ∈ [0.7, 0.9].
+Data the baseline needs to match: S1a 1.350 → 0.86B (**1.4×**) · S1b' 1.347 → 0.90B (**1.5×**) · β0.3 1.343 → 0.96B (**1.6×**).
+Overhead: +3–8% wall/FLOPs, so ≈1.4× compute efficiency (~70% of training time for baseline quality).
+⚠️ Measured at 33M params / 0.6B bytes only. Likely shrinks with scale (small H-Nets underuse the main net). The f3 @3B run is the first test.
+
+**08:50 GOAL (user): hillclimb the dynamic-chunking architecture until 10 AM PST (18:00 UTC) and show strong results.**
+Protocol: 0.6B-byte runs (~15 min), one change at a time vs the current best; FLOP-matched architecture changes; final best confirmed at 3B against the H-Net 3B baseline (1.2750).
+New knobs: `latent.target_norm=ln`, `latent.extra_horizons=[k..]` (+`beta_h`), `latent.head=mlp`.
+
+**09:04 S0 @3B** `s0_bytetf_d384T5`: **1.2325** vs H-Net 1.2750. ❌ The byte Transformer's lead grows with data (0.025 @0.6B → 0.043 @3B).
+At 0.6B, H-Net + latent loss (1.343–1.347) already ties the byte Transformer (1.347).
+⇒ **Hillclimb target: dynamic chunking > plain byte Transformer.** Suspected weak spot: H-Net's byte-level enc/dec (Mamba, no MLP, d=256).
+⚠️ d_model 320/384 for stage 0 is not usable: Mamba2 in_proj width must be a multiple of 8 for causal_conv1d with seq_idx (needs nheads%8==0, headdim fixed at 64). Replaced with an N=4 variant.
+
+**09:22 ✅ S1b' seed 1** → 1.3529 (seed 0: 1.3470). Mean **1.350 ± 0.003** vs baseline mean 1.373. The latent-loss gain (−0.023) is robust across seeds.
+
+**09:40 ✅✅ HC-A1 `hcA1_ema_b03`** (EMA 0.99 + β_tf 0.3): **1.3224**. New best: −0.051 vs H-Net baseline, −0.025 vs EMA β=1.
+At equal FLOPs (4.55e16) it beats the byte Transformer (1.3473). Chunks not word-aligned (0.16). → `configs/hc_best.yaml` = this; round B builds on it.
+**09:56 ❌ HC-A2 `hcA2_ema_lntgt`** (layer-norm targets, β 1): 1.3573 vs base 1.350 ± 0.003. Rejected.
+**10:12 ❌ HC-A3 `hcA3_ema_h2`** (+ extra head predicting c̄_{j+2}, β_h 0.5, β 1): 1.3623 vs base 1.350. Rejected. Like A2 and β=3, more latent pressure hurts BPB.
+
+**10:28 ✅✅✅ HC-A4 `hcA4_ema_mlphead`** (EMA 0.99, β 1, **MLP predictor head** D1→2D1→D0 GELU): **1.3029**. New best: −0.047 vs the linear head, −0.070 vs H-Net baseline.
+FLOPs 4.62e16 (~equal to the byte Transformer's 4.55e16 → 1.3473). Interpretation: the MLP head absorbs the latent mapping, so the main net's output space is less constrained for the AR path.
+❌ Round B launch failed: overrides with spaces get split by xargs. Relaunched on the new `hc_best` (MLP head) without spaces, together with the MLP seed replicate and MLP + β 0.3.
+⚠️ Compute accounting: logged `train_flops` excludes the EMA target-encoder forward (~5.2 MFLOP/byte, +7%) and the predictor head (<1%).
+True cost of hcA4 ≈ 4.9e16 vs the byte Transformer's 4.55e16 (+8%), which is small next to its 0.044-BPB margin.
+Wall-clock is a different story: H-Net runs take ~15–16 min vs 7 min for the byte Transformer at equal FLOPs (Mamba/varlen kernels at lower MFU).
+
+**10:45 ⚠️ HC-C1 `hcC1_best_seed1`** (EMA, β 0.3, linear, seed 1): 1.3486 vs seed 0's 1.3224. Mean **1.3355**. Latent runs have seed spread up to ~0.026, so every claimed win needs a replicate.
+Seed means so far: baseline 1.373 · EMA β1 linear 1.350 · EMA β0.3 linear 1.336.
+
+**11:01 ⚠️ HC-C3 `hcC3_mlp_seed1`** → 1.3408 (seed 0: 1.3029). MLP head mean **1.322** (best recipe on average; −0.051 vs baseline, −0.025 vs byte Transformer).
+**Variance source found:** over 18 latent runs, corr(val L1/L0, BPB) = **−0.89**. The latent loss pushes the router past its 1/6 target (0.18–0.215), and seeds that overshoot more win.
+Plain H-Net at N=5 does *not* benefit (1.381), so the gain needs latent loss + more chunks together. → Round D: MLP head + N=5 (2 seeds) to make that explicit and stable.
+**11:17 ❌ HC-C4 `hcC4_mlp_b03`** (MLP head, β 0.3): 1.3553 vs MLP β 1 mean 1.322. With an MLP head, β 1 is better. Rejected.
+
+**11:34 HC-D1 `hcD1_mlp_N5`** (MLP head + ratio target N=5): **1.2851**, but L1/L0 0.26, so FLOPs 5.25e16 (+15% vs byte Transformer, +24% vs H-Net). Not FLOP-fair yet.
+→ FLOP-matched variant: main T9→T7 (`hcD3/4`, 2 seeds).
+
+**11:50 HC-D2 `hcD2_mlp_N5_seed1`** → 1.3203 (seed 0: 1.2851) at equal compression (0.256 vs 0.260), so compression isn't the only variance source.
+✅ **Paired-seed analysis:** seed 1 is worse than seed 0 for every latent recipe, from the first evals onward (no spikes). The **ranking is identical across seeds**:
+| recipe | seed 0 | seed 1 | mean Δ vs H-Net |
+|---|---|---|---|
+| H-Net baseline | 1.3721 | 1.3744 | — |
+| EMA lin β1 | 1.3470 | 1.3529 | −0.023 |
+| EMA lin β0.3 | 1.3224 | 1.3486 | −0.038 |
+| EMA **MLP** β1 | 1.3029 | 1.3408 | **−0.051** |
+| EMA MLP β1 N=5 (+24% FLOPs) | 1.2851 | 1.3203 | −0.070 |
+⇒ Every hillclimb step is confirmed paired by seed. The seed only changes the magnitude.
+
+**12:06 ✅✅ HC-D3 `hcD3_mlp_N5_T7`** (MLP head, N=5, main T9→T7, FLOP-matched): **1.2733** @4.70e16 FLOPs, 26.5M params.
+−0.099 vs H-Net baseline (paired seed 0), −0.074 vs byte Transformer (4.55e16). Beats the deeper N5-T9 (1.2851) with less compute.
+Chunks ~3.6 bytes, space recall 0.87. Direction: more and smaller chunks + shallower main + latent loss → round E (N4·T5, N3·T4).
+**12:23 ✅ HC-D4 `hcD4_mlp_N5_T7_seed1`** → 1.2970 (seed 0: 1.2733). Mean **1.285**. Δ vs H-Net (paired): −0.099 / −0.077 (mean −0.088). Vs byte Transformer: −0.062. Seed-1 ranking preserved.
+**12:38 ❌ HC-E1 `hcE1_mlp_N4_T5`** (N=4, main T5): 1.3111 vs hcD3 1.2733 (paired seed 0). Too shallow a main net / too fine chunks. N=5·T7 stays best.
+**12:55 HC-E2 `hcE2_mlp_N3_T4`** (N=3, main T4): 1.2764 vs hcD3 1.2733 (paired seed 0, tie within noise). See FLOPs below; N=5·T7 is kept as final (launch_final picks the lowest BPB).
+
+**13:09 ✅ control `hcD5_plain_N5_T7`** (same final architecture, no latent loss): 1.3619. Architecture alone gives −0.010 vs H-Net (1.3721).
+The latent loss on top gives −0.089 (→ 1.2733), so the gain comes from the latent objective, not the architecture.
+
+**14:29 ✅✅✅ FINAL @3B `f3_D3_mlp_N5_T7_s0`** (EMA 0.99 + MLP head + N=5 + main T7): **1.1057 val BPB**.
+H-Net 3B: 1.2750 (−0.169) · byte Transformer 3B: 1.2325 (−0.127). FLOPs 2.67e17 (+18% vs bytes, +28% vs H-Net; the router went to L1/L0 0.30 at 3B) +7% EMA.
+Mid-training it already led by 0.10–0.15 at equal steps.
+✅ **Causality verified** (`tests/test_causality2.py`): perturbing future bytes leaves the loss on earlier positions unchanged (0.83012 vs 0.83006). Residual logit wiggle (≤0.25) is bf16 packing noise, identical for the plain H-Net checkpoint.
+Rough compute-efficiency (log-linear in compute along each baseline's 0.6B→3B curve): the byte Transformer would need ~5× and H-Net ~15× more compute to reach 1.106.
+Queued: BPE @3B (parity check) and the no-latent control @3B.
+**15:51 ✅ FINAL @3B seed 1** `f3_D3_mlp_N5_T7_s1`: **1.1081** (seed 0: 1.1057). Mean **1.107 ± 0.001**, far tighter than at 0.6B. Robust.
+
+**16:34 BPE @3B** `s0_bpe_d512T8` (lr 4e-3): **1.0815**. Gap to BPE at 3B: plain H-Net 0.194 → final latent H-Net **0.025**.
+⇒ The latent recipe closes **~87% of the H-Net→BPE gap** at this scale. Tokenizer-free BPE parity isn't reached yet, but it's close.
+
+**17:45 ⚠️ control @3B `f3_plain_N5_T7_s0`** (final architecture N=5·T7, **no** latent loss): **1.1361**. This changes the 3B attribution:
+| @3B (val BPB) | H-Net N6·T9 | H-Net N5·T7 (no latent) | + latent loss (final, 2 seeds) | byte Transformer | BPE |
+|---|---|---|---|---|---|
+| | 1.2750 | 1.1361 | **1.1069** (1.1057 / 1.1081) | 1.2325 | 1.0815 |
+Decomposition of the −0.168 gain vs H-Net @3B: architecture/compression (N=5, shallower main) **−0.139**, latent loss **−0.029** (paired seed 0).
+At 0.6B it was the reverse (arch −0.010, latent −0.089). So the latent loss mainly speeds early learning and still helps at 3B. The finer-chunk architecture pays off with more data.
+Note: the plain N5·T7 router also drifts to L1/L0 ≈ 0.29 at 3B, so its FLOPs rise like the latent model's.

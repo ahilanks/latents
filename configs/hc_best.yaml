@@ -1,0 +1,11 @@
+# Current hillclimb best (updated after each round; see logistics.md).
+# = EMA(0.99) targets + L_TF (beta 1) with an MLP predictor head (hcA4_ema_mlphead: 1.3029 @0.6B)
+base: s1_tf_ema.yaml
+group: HC
+name: hc_best
+latent:
+  head: mlp
+train:
+  lr: 2.0e-3
+  total_bytes: 6.0e+8
+  eval_every: 1000

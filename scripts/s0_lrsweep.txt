@@ -1,0 +1,7 @@
+# S0 LR sweep: 0.6B bytes (1/5 of the S0 budget), base LR in {1e-3, 2e-3, 4e-3}
+python -m latents.train configs/s0_hnet.yaml group=S0-lrsweep name=s0sw_hnet_lr1e-3 train.lr=1e-3 train.total_bytes=6e8 train.eval_every=1000
+python -m latents.train configs/s0_hnet.yaml group=S0-lrsweep name=s0sw_hnet_lr2e-3 train.lr=2e-3 train.total_bytes=6e8 train.eval_every=1000
+python -m latents.train configs/s0_hnet.yaml group=S0-lrsweep name=s0sw_hnet_lr4e-3 train.lr=4e-3 train.total_bytes=6e8 train.eval_every=1000
+python -m latents.train configs/s0_bpe.yaml group=S0-lrsweep name=s0sw_bpe_lr1e-3 train.lr=1e-3 train.total_bytes=6e8 train.eval_every=1000
+python -m latents.train configs/s0_bpe.yaml group=S0-lrsweep name=s0sw_bpe_lr2e-3 train.lr=2e-3 train.total_bytes=6e8 train.eval_every=1000
+python -m latents.train configs/s0_bpe.yaml group=S0-lrsweep name=s0sw_bpe_lr4e-3 train.lr=4e-3 train.total_bytes=6e8 train.eval_every=1000

@@ -1,0 +1,5 @@
+# Seed replicates of latent runs (is the word-aligned-chunking outcome a bifurcation?), then 3B baselines
+python -m latents.train configs/s2_final_joint.yaml name=s2d_ema_tf_r_predonly_seed1 train.seed=1 train.lr=2e-3 train.total_bytes=6e8 train.eval_every=1000
+python -m latents.train configs/s2_rollout.yaml name=s2c_tf_r_predonly_seed1 latent.rollout_predictor_only=true train.seed=1 train.lr=2e-3 train.total_bytes=6e8 train.eval_every=1000
+python -m latents.train configs/s0_hnet.yaml name=s0_hnet1s_256-512_m4T9m4 train.lr=2e-3
+python -m latents.train configs/s0_bytes.yaml name=s0_bytetf_d384T5 train.lr=4e-3

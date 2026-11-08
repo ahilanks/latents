@@ -1,0 +1,1 @@
+python -m latents.train configs/s0_bpe.yaml group=S0-lrsweep name=s0sw_bpe_lr4e-3 train.lr=4e-3 train.total_bytes=6e8 train.eval_every=1000

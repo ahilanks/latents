@@ -1,0 +1,21 @@
+[project]
+name = "latents"
+version = "0.1.0"
+description = "H-Net reproduction at small scale -> JEPA-style latent prediction over dynamic chunks"
+requires-python = ">=3.10"
+# torch==2.8.0+cu128 is preinstalled on the pod; GPU kernels (mamba-ssm, causal-conv1d, flash-attn) and
+# the official H-Net code are installed from pinned wheels / commit by setup.sh.
+dependencies = [
+  "numpy", "pyarrow", "pyyaml", "einops", "optree", "omegaconf", "regex",
+  "tiktoken", "wandb", "huggingface_hub", "python-dotenv", "datasets", "matplotlib",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["latents*"]

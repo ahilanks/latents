@@ -1,0 +1,3 @@
+# @0.6B: full joint recipe, then the cut-top-half version
+python -m latents.train configs/s2_final_joint.yaml train.lr=2e-3 train.total_bytes=6e8 train.eval_every=1000 name=s2d_ema_tf_r_predonly
+python -m latents.train configs/s3_latent_main.yaml train.lr=2e-3 train.total_bytes=6e8 train.eval_every=1000 name=s3a_latent_main

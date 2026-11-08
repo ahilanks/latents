@@ -1,0 +1,6 @@
+# S3b: latent-style model. The main network is trained only by latent losses (AR grad stopped), and the byte
+# decoder reads the *predicted next-chunk latent* head(P(c<=j)) (detached) instead of the raw main-net output.
+base: s3_latent_main.yaml
+name: s3b_latent_decode_pred
+latent:
+  decode_from_pred: true

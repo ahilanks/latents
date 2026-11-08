@@ -1,0 +1,22 @@
+# Shared defaults (S0 reproduction scale: ~25 MFLOP/byte fwd, 3B bytes => ~2.3e17 train FLOPs)
+group: S0-repro
+data_dir: data/fwe
+train:
+  seq_len: 8192          # bytes (BPE configs override with tokens)
+  batch_size: 32         # ~262k bytes / step
+  micro_batch: 32
+  total_bytes: 3.0e+9
+  lr: 2.0e-3             # base LR; H-Net stages get paper LR multipliers on top
+  wd: 0.1
+  clip: 1.0
+  warmup_frac: 0.1
+  decay_frac: 0.2        # WSD with 1-sqrt cooldown (paper: 10% warmup, 20% decay)
+  seed: 0
+  log_every: 50
+  eval_every: 2000
+  eval_windows: 256      # periodic evals on 2MB; final eval on full 8MB val
+model:
+  ssm_cfg: {chunk_size: 256, d_conv: 4, d_state: 128, expand: 2}
+  N: 6
+  alpha: 0.03
+  pool_k: 0

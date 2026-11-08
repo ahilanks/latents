@@ -1,0 +1,6 @@
+# S2 @0.6B: + 2-step rollout on top of S1a (online targets won S1: 1.3502 vs EMA 1.3612)
+python -m latents.train configs/s2_rollout.yaml name=s2_tf_r_online train.lr=2e-3 train.total_bytes=6e8 train.eval_every=1000
+# S3 control: decoder without main-network context
+python -m latents.train configs/s3_zero_main.yaml name=s3c_zero_main train.lr=2e-3 train.total_bytes=6e8 train.eval_every=1000
+# S1b': EMA targets with faster tau (0.99 constant)
+python -m latents.train configs/s1_tf_ema.yaml name=s1b2_tf_ema099 latent.ema_tau=0.99 latent.ema_tau_end=0.99 train.lr=2e-3 train.total_bytes=6e8 train.eval_every=1000

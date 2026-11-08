@@ -1,0 +1,4 @@
+# S1 ladder @0.6B bytes (same budget/seed as s0sw_hnet_lr2e-3 = 1.3721). Seed-1 replicate gives run-to-run noise.
+python -m latents.train configs/s0_hnet.yaml group=S0-short name=s0s_hnet_seed1 train.lr=2e-3 train.seed=1 train.total_bytes=6e8 train.eval_every=1000
+python -m latents.train configs/s1_tf_online.yaml name=s1a_tf_online train.lr=2e-3 train.total_bytes=6e8 train.eval_every=1000
+python -m latents.train configs/s1_tf_ema.yaml name=s1b_tf_ema train.lr=2e-3 train.total_bytes=6e8 train.eval_every=1000

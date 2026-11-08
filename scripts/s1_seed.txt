@@ -1,0 +1,1 @@
+python -m latents.train configs/s1_tf_ema.yaml name=s1b2_tf_ema099_seed1 train.seed=1 train.lr=2e-3 train.total_bytes=6e8 train.eval_every=1000

@@ -1,0 +1,14 @@
+base: base.yaml
+name: s0_bpe_d512T8
+tags: [baseline, bpe]
+model:
+  tokenizer: gpt2
+  arch_layout: ["T8"]
+  d_model: [512]
+  d_intermediate: [1408]
+  num_heads: [8]
+  rotary_emb_dim: [32]
+  window_size: [-1]
+train:
+  seq_len: 1792          # tokens (~8.4KB), paper's BPE context
+  micro_batch: 16

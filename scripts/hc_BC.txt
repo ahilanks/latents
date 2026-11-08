@@ -1,0 +1,7 @@
+# Round B'/C' @0.6B on hc_best = EMA 0.99 + MLP head + beta 1 (hcA4 1.3029). No spaces inside overrides (xargs splits them).
+python -m latents.train configs/hc_best.yaml group=HC-C name=hcC3_mlp_seed1 train.seed=1
+python -m latents.train configs/hc_best.yaml group=HC-C name=hcC4_mlp_b03 latent.beta_tf=0.3
+python -m latents.train configs/hc_best.yaml group=HC-B name=hcB1_m3t1_T9 model.arch_layout=[m3t1,[T9],t1m3]
+python -m latents.train configs/hc_best.yaml group=HC-B name=hcB2_m2T1_T9 model.arch_layout=[m2T1,[T9],T1m2] model.d_intermediate=[688,1408]
+python -m latents.train configs/hc_best.yaml group=HC-B name=hcB3_T2_T9 model.arch_layout=[T2,[T9],T2] model.d_intermediate=[688,1408]
+python -m latents.train configs/hc_best.yaml group=HC-B name=hcB4_N4_T6 model.N=4 model.arch_layout=[m4,[T6],m4]

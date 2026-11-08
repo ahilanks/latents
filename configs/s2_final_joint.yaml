@@ -1,0 +1,8 @@
+# S2d: full latent recipe, joint with AR: EMA(0.99) targets + L_TF + predictor-only 2-step rollout L_R
+base: s1_tf_ema.yaml
+group: S2-rollout
+name: s2d_ema_tf_r_predonly
+tags: [hnet, latent, tf, rollout, ema]
+latent:
+  beta_r: 1.0
+  rollout_predictor_only: true

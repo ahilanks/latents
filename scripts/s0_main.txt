@@ -1,0 +1,5 @@
+# S0 full-budget runs: 3B bytes each (~2.3e17 train FLOPs), serial. Best LRs from S0-lrsweep / S0-short.
+python -m latents.train configs/s0_hnet.yaml name=s0_hnet1s_256-512_m4T9m4 train.lr=2e-3
+python -m latents.train configs/s0_bytes.yaml name=s0_bytetf_d384T5 train.lr=4e-3
+python -m latents.train configs/s0_bpe.yaml name=s0_bpe_d512T8 train.lr=4e-3
+python -m latents.train configs/s0_pool.yaml name=s0_hnetpool6_256-512_m4T11m4 train.lr=2e-3

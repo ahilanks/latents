@@ -1,0 +1,2 @@
+# Control: same architecture as hcD3 (N=5, main T7) WITHOUT latent loss
+python -m latents.train configs/s0_hnet.yaml group=HC-D name=hcD5_plain_N5_T7 model.N=5 model.arch_layout=[m4,[T7],m4] train.lr=2e-3 train.total_bytes=6e8 train.eval_every=1000

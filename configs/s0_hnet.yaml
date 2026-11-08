@@ -1,0 +1,13 @@
+base: base.yaml
+name: s0_hnet1s_256-512_m4T9m4
+tags: [hnet, dc]
+model:
+  tokenizer: bytes
+  arch_layout: ["m4", ["T9"], "m4"]
+  d_model: [256, 512]
+  d_intermediate: [0, 1408]
+  num_heads: [4, 8]
+  rotary_emb_dim: [32, 32]
+  window_size: [1023, -1]
+train:
+  micro_batch: 16

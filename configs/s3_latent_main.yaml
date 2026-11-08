@@ -1,0 +1,9 @@
+# S3a: "cut the top half" for the main network: the AR gradient is stopped at the main network, which is
+# trained only by the latent losses (S2d recipe). The byte decoder still reads its (detached) outputs.
+# Compare against s2d (joint) and s3c_zero_main (decoder without main-net context).
+base: s2_final_joint.yaml
+group: S3-cut
+name: s3a_latent_main
+tags: [hnet, latent, cut]
+latent:
+  detach_main: true

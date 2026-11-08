@@ -1,0 +1,3 @@
+# Round E @0.6B (seed 0, paired vs hcD3 1.2733): push "more, smaller chunks + shallower main" at ~matched FLOPs
+python -m latents.train configs/hc_best.yaml group=HC-E name=hcE1_mlp_N4_T5 model.N=4 model.arch_layout=[m4,[T5],m4]
+python -m latents.train configs/hc_best.yaml group=HC-E name=hcE2_mlp_N3_T4 model.N=3 model.arch_layout=[m4,[T4],m4]

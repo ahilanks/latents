@@ -1,0 +1,6 @@
+base: s0_hnet.yaml
+name: s0_hnetpool6_256-512_m4T11m4
+tags: [hnet, pool]
+model:
+  arch_layout: ["m4", ["T11"], "m4"]
+  pool_k: 6

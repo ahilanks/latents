@@ -1,0 +1,7 @@
+# S3 control: decoder gets zeros instead of main-network output (no chunk-level context at all)
+base: s0_hnet.yaml
+group: S3-cut
+name: s3c_zero_main
+tags: [hnet, control]
+model:
+  zero_main: true

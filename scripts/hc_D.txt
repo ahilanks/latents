@@ -1,0 +1,6 @@
+# Round D @0.6B: control compression explicitly (latent runs: corr(L1/L0, BPB) = -0.89), 2 seeds; then architecture variants on hc_best
+python -m latents.train configs/hc_best.yaml group=HC-D name=hcD1_mlp_N5 model.N=5
+python -m latents.train configs/hc_best.yaml group=HC-D name=hcD2_mlp_N5_seed1 model.N=5 train.seed=1
+python -m latents.train configs/hc_best.yaml group=HC-B name=hcB2_m2T1_T9 model.arch_layout=[m2T1,[T9],T1m2] model.d_intermediate=[688,1408]
+python -m latents.train configs/hc_best.yaml group=HC-B name=hcB3_T2_T9 model.arch_layout=[T2,[T9],T2] model.d_intermediate=[688,1408]
+python -m latents.train configs/hc_best.yaml group=HC-B name=hcB1_m3t1_T9 model.arch_layout=[m3t1,[T9],t1m3]

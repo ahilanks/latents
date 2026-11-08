@@ -1,0 +1,2 @@
+# Control for S1a's compression shift (1/6 -> 1/5.1): plain H-Net with ratio target N=5
+python -m latents.train configs/s0_hnet.yaml group=S1-latent name=s1c_hnet_N5_control model.N=5 train.lr=2e-3 train.total_bytes=6e8 train.eval_every=1000
