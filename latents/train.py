@@ -5,7 +5,7 @@ usage: python -m latents.train configs/<cfg>.yaml [dotted.key=value ...]
 Logs: W&B (project hnet-latents), local runs/<name>/{config.yaml,metrics.jsonl,summary.json,chunks.txt},
 final checkpoint + logs uploaded to HF repo a5ilank/hnet-latents under runs/<name>/.
 
-Early kill (train.kill_ref=<run> [train.kill_margin=0.03 train.kill_after=0.33]): at each eval after
+Early kill (train.kill_ref=<run> [train.kill_margin=0.03 train.kill_after=0.8]): at each eval after
 kill_after of training, if val BPB is worse than the reference run's val BPB at the same step by more than
 kill_margin, stop, write summary.json with killed=true and exit with code 3.
 Manual kill: create runs/<name>/KILL (its text = the reason); the run stops the same way at its next eval, so the
@@ -28,6 +28,9 @@ import torch.nn.functional as F
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
+# Early kill only late in training: on H100 the val BPB at ~45% swings by 0.05-0.07 between seeds and between
+# identical runs (R0: seed order flips between step 1000 and the end), so a 0.03 margin at 33% killed sound runs.
+KILL_AFTER = 0.8
 try:
     from dotenv import load_dotenv
     load_dotenv(ROOT / ".env")
@@ -490,7 +493,7 @@ def main(argv):
                 if rank == 0:
                     kf = run_dir / "KILL"
                     ref = ref_bpb_at(tc["kill_ref"], step) if (tc.get("kill_ref") and
-                                                              step >= tc.get("kill_after", 0.33) * total_steps) else None
+                                                              step >= tc.get("kill_after", KILL_AFTER) * total_steps) else None
                     if kf.exists():
                         flag += 1
                         killed = "manual: " + (kf.read_text().strip() or "KILL file")

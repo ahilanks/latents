@@ -239,3 +239,8 @@ gates and job files. ⚠️ R0 re-runs the hcD3 recipe first to confirm the refa
   The cause is H100 numerics in the router: fewer chunks, so less main-net compute. Every ladder comparison is H100 vs H100 and paired by seed, so the ladder resumes at R1 with L-R0-s* as the reference (`logs/jobs/phase1_resume.txt`). It adds a same-seed replicate L-R0rep-s0 to measure run-to-run noise against the 0.01 gate tolerances.
 - **Latent loss vs none at 0.6B (seed 0).** R0 1.2872 vs the old no-latent control 1.3619 (old code, A100): −0.075, vs −0.089 before. Needs an H100 no-latent run to be paired.
 - **22:42 side track: `side-f3-plain-3p2B-s0` stopped at 6000/12207** (`runs/<name>/KILL`). Val was flat at 1.4897 → 1.4888 between steps 2000 and 4000 while its twin `side-f3-plain-s1` went 1.4721 → 1.3035. Train BPB jumped at ~2500 and the router stuck at L1/L0 ≈ 0.19. It reached 1.4397 at 6000. Rerun queued as `side-f3-plain-3p2B-s0-r2` after the ladder.
+- **22:58 ❌→↻ R1-s1 false early kill.** It was killed at step 1000 (44%): 1.6149 vs R0-s1 1.5507 (+0.064 > 0.03). But R1-s0 was *better* than R0-s0 at that step (1.575 vs 1.5909), and R0's own seeds swap order between step 1000 (1.5909 / 1.5507) and the end (1.2872 / 1.3148). Mid-training val BPB on H100 swings 0.05–0.07, so the kill was noise.
+
+  Fixes:
+  - Default `kill_after` is now 0.8 (`KILL_AFTER` in train.py), so only the late eval can kill.
+  - R1-s1 is rerun (`logs/jobs/r1s1_rerun.txt`). Try 1's summary was set aside as `summary.killed_try1.json`, so gate R1 waits for the rerun instead of failing.
