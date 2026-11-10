@@ -149,9 +149,9 @@ def job_status(name):
             parts.append(f"{sps:.3f} s/step, ETA {(total - step) * sps / 60:.0f} min")
         if mfu is not None:
             parts.append(f"MFU {100 * mfu:.0f}%")
-        loss = num(st, "train/loss") or num(st, "loss")
-        if loss is not None:
-            parts.append(f"loss {loss:.4f}")
+        tb = num(st, "train/bpb")  # (a bare "loss=" would match train/ratio_loss)
+        if tb is not None:
+            parts.append(f"train bpb {tb:.4f}")
     ok = [ln for ln in lines if re.match(r"^(OK|FAIL)\s", ln)]
     if ok:
         parts.insert(0, f"{sum(ln.startswith('OK') for ln in ok)} OK / {sum(ln.startswith('FAIL') for ln in ok)} FAIL")
