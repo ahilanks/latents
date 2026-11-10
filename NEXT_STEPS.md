@@ -83,13 +83,13 @@ Pieces:
 
 | Pod | $/hr | Ladder + side track | Cost |
 |---|---|---|---|
-| **2× H100 80GB (chosen)** | ~$8 | ~10 h, then ~4 h (side track runs after the ladder) | ~$100–130 |
+| **2× H100 80GB (chosen)** | ~$8 | ~8.5–9.5 h, then ~3.5 h (side track runs after the ladder) | ~$100–110 |
 | 4× H100 80GB | $16.36 | ~7–9 h | ~$115–150 |
 | 8× A100 80GB | $22.32 | ~8.5 h | ~$190 |
 | 4× A100 80GB | — | ~11 h | — |
 
 Notes:
-- **Measured vs guessed.** The A100 numbers come from measured run times in `logistics.md`. The H100 numbers assume H100s are 1.3–1.6× faster on models this small, which is a guess. Check `perf/sec_per_step` in the first preflight and phase-1 runs.
+- **Measured vs guessed.** The A100 numbers come from measured run times in `logistics.md`. On the 2× H100 pod, the first 0.6B phase-1 run (`L-R0-s0`) ran at 0.24 s/step and took 9.9 min, against ~0.4 s/step and 15–16 min on the A100: about 1.7× faster. The 4× H100 row still assumes 1.3–1.6×. Rollout and nested rungs cost more per step, and their times are scaled from the A100 runs.
 - **Assumptions.** Every gate passes, and the pod is stopped once the queue ends. Failed rungs or fallbacks add 10–20%.
 - **Avoid 40GB cards.** Micro-batches are sized for 80GB.
 
