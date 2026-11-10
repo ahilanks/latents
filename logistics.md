@@ -253,3 +253,8 @@ gates and job files. ⚠️ R0 re-runs the hcD3 recipe first to confirm the refa
     - Signal checks are unchanged: trunk info > 0.01 vs the floor, and beats copy.
   - R1-s0 try 1 had been killed at step 2000 (+0.036 vs R0-s0). It is being rerun to completion with no early kill (`logs/jobs/r1s0_rerun.txt`), so gate R1 decides on final values.
 - **23:22 the 10B side pair OOMed at launch** (`side-f10-*`: 4 jobs on a GPU). They are requeued with the new guard (`RUN_JOBS_MAX_PER_GPU=1 RUN_JOBS_MIN_FREE_GB=30`).
+- **23:29 R1-s1 rerun → 1.3065, vs R0-s1 1.3148 (−0.008).** The first try was early-killed at step 1000 as +0.064, which confirms that mid-training gaps are noise. R1-s0 is being rerun; gate R1 waits for it.
+- **23:33 `side-f3-plain-s1`: 3B, no latent loss, H100 → 1.1169.**
+  - The old no-latent control (seed 0, A100) was 1.1361. The joint-latent 3B runs (A100) are 1.1057 / 1.1081.
+  - Paired by seed 1, the latent gain is only −0.009, vs −0.030 on seed 0. The no-latent seeds differ by 0.019, unlike the latent seeds (0.0024), but hardware and code also differ.
+  - A clean H100 pair is queued: `side-f3-latent-s1` (`logs/jobs/side_f3_latent.txt`).
