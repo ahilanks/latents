@@ -124,9 +124,10 @@ class LatentObjective(nn.Module):
             from latents.rollout import Rollout
             # predictor_only: rollout gradient trains only the rollout-token path (cached pass-1 context and the
             # fed-back prediction are detached), like V-JEPA 2-AC where encoder + TF context get no rollout grads
+            # With nesting, Nest.topdown tags the level-1 predictor's qkv capture "L1" (for any tie), so read that.
             self.rollout = Rollout.for_main(
                 model, predictor_only=bool(lcfg.get("rollout_predictor_only", False)),
-                k=int(lcfg.get("rollout_k", 2)), tag="L1" if tie_all else None,
+                k=int(lcfg.get("rollout_k", 2)), tag="L1" if self.nest is not None else None,
                 in_add=(lambda: self.nest.level_emb.weight[1]) if tie_all else None)
         self.level_rollouts = {}
         nk = int(self.nest.nc.get("rollout_k", 0)) if self.nest is not None else 0

@@ -153,6 +153,11 @@ def test_rollout_teacher_inputs_reproduce_pass1():
     (dict(EMA, target="online"), {}),
     (dict(EMA, beta_r=1.0, rollout_k=2), {"N": 4, "arch_layout": ["m1", ["T2"], "m1"],
                                            "nest": dict(NEST2, rollout_k=2, tie="all", levels=3)}),
+    # R12 / R15 shapes: untied level 2 on top of a level-1 rollout trunk (the phase-3 winner)
+    (dict(EMA, beta_r=1.0, rollout_k=4, rollout_predictor_only=True),
+     {"N": 4, "arch_layout": ["m1", ["T2"], "m1"], "nest": dict(NEST2, router="pool", topdown=False, input_grad=False)}),
+    (dict(EMA, beta_r=1.0, rollout_k=4, rollout_predictor_only=True),
+     {"N": 4, "arch_layout": ["m1", ["T2"], "m1"], "nest": dict(NEST2, rollout_k=2)}),
 ])
 def test_latent_losses_finite_and_backprop(lcfg, over):
     m, mc, lat = make(over, lcfg)

@@ -88,7 +88,14 @@ def wiring(cfg_path):
         msgs.append("memory too close to 80GB: lower train.micro_batch")
     bb = model.backbone
     lc = (cfg.get("latent") or {})
-    # (b) byte loss alone
+    # (b) byte loss alone. residual_proj starts at zero (official H-Net init), which closes the residual path into
+    # the encoder at init: with fixed chunks (R4/R5) the encoder would get no byte gradient yet, and the
+    # detach_trunk check (R6) would pass even without the detach. Open it, as after the first optimizer step.
+    rp = bb.residual_proj.weight
+    rp0 = rp.detach().clone()
+    if rp0.abs().sum() == 0:
+        with torch.no_grad():
+            rp.normal_(std=0.02)
     zero()
     out = fwd()
     with T.autocast():
@@ -111,6 +118,8 @@ def wiring(cfg_path):
         if (g > 0) != bool(want):
             ok = False
             msgs.append(f"byte-loss grad into {name} = {g:.3g}, expected {'>0' if want else '0'}")
+    with torch.no_grad():
+        rp.copy_(rp0)
     # (c) latent loss alone
     if lat is not None:
         zero()

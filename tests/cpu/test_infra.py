@@ -150,11 +150,19 @@ def test_ladder_checks_and_select(tmp_path, monkeypatch):
     assert "p2_best.yaml" in (tmp_path / "configs" / "ladder" / "p3_best.yaml").read_text()
 
 
-def test_job_files_parse_and_dry_run():
+def test_job_files_parse_and_dry_run(tmp_path, monkeypatch):
     import ladder as Lm
     import run_jobs as Q
+    # generate into tmp and keep the dry-run queue logs there: the tests must be safe on a pod with a live queue
+    monkeypatch.setattr(Lm, "ROOT", tmp_path)
+    monkeypatch.setattr(Q, "ROOT", tmp_path)
+    (tmp_path / "configs").symlink_to(ROOT / "configs")
+    (tmp_path / "scripts").mkdir()
     Lm.write_jobs()
-    for f in sorted((ROOT / "scripts" / "ladder").glob("*.txt")):
+    gen = sorted((tmp_path / "scripts" / "ladder").glob("*.txt"))
+    assert {f.name for f in gen} == {f.name for f in (ROOT / "scripts" / "ladder").glob("*.txt")}
+    for f in gen:
+        assert f.read_text() == (ROOT / "scripts" / "ladder" / f.name).read_text(), f"{f.name}: run ladder.py jobs"
         items = Q.parse(f)
         assert items, f
         for it in items:
@@ -167,7 +175,7 @@ def test_job_files_parse_and_dry_run():
 def test_all_ladder_configs_build():
     """Every rung config loads and builds its model + latent objective (tiny widths, CPU)."""
     import preflight
-    preflight.ensure_stubs()
+    made = preflight.ensure_stubs()  # remove only these: a running preflight / ladder may own the others
     try:
         paths = sorted((ROOT / "configs" / "ladder").glob("*.yaml")) + sorted((ROOT / "configs" / "side").glob("*.yaml")) \
             + sorted((ROOT / "configs" / "task").glob("*.yaml"))
@@ -184,7 +192,8 @@ def test_all_ladder_configs_build():
             if cfg.get("latent"):
                 latent_lib.build(cfg["latent"], m, mc)
     finally:
-        preflight.remove_stubs()
+        for p in made:
+            p.unlink(missing_ok=True)
 
 
 def test_data_parallel_two_processes(tmp_path, task_data):
