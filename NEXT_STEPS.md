@@ -10,9 +10,9 @@ Two losses stay because they constrain the model rather than carry information a
 
 ## Running it
 
-We run on one pod with **4× H100 80GB**. The job runner uses whatever GPUs it sees, so 2, 4 or 8 of any 80GB card work.
+We run on one pod with **2× H100 80GB**. The job runner uses whatever GPUs it sees, so 2, 4 or 8 of any 80GB card work.
 
-Lambda, 4× H100 SXM, image **GPU Base 24.04** (any Ubuntu 22.04/24.04 image works). Set up as the `ubuntu` user, inside tmux, so an SSH drop doesn't kill the queue:
+Lambda, 2× H100 SXM, image **GPU Base 24.04** (any Ubuntu 22.04/24.04 image works). Set up as the `ubuntu` user, inside tmux, so an SSH drop doesn't kill the queue:
 
 ```bash
 git clone https://github.com/ahilanks/latents && cd latents
@@ -46,6 +46,12 @@ bash scripts/ladder/run_all.sh
 - `python -m pytest -q` runs the 34 CPU tests (~30 s, kernel stubs, no GPU needed).
 - `run_all.sh` runs preflight, phases 1–6 and the eval suite, and stops at the first failed gate.
 
+On 2 GPUs the ladder uses both, and the side track runs after it (whether or not the ladder stopped at a gate). `touch logs/skip_side` before the ladder ends to skip it:
+
+```bash
+bash scripts/ladder/run_all.sh 2>&1 | tee -a logs/run_all.out; [ -e logs/skip_side ] || python scripts/run_jobs.py scripts/ladder/side.txt 2>&1 | tee -a logs/side.out
+```
+
 On 4 GPUs, give the side track its own GPU so it overlaps the ladder:
 
 ```bash
@@ -77,7 +83,8 @@ Pieces:
 
 | Pod | $/hr | Ladder + side track | Cost |
 |---|---|---|---|
-| **4× H100 80GB (chosen)** | $16.36 | ~7–9 h | ~$115–150 |
+| **2× H100 80GB (chosen)** | ~$8 | ~10 h, then ~4 h (side track runs after the ladder) | ~$100–130 |
+| 4× H100 80GB | $16.36 | ~7–9 h | ~$115–150 |
 | 8× A100 80GB | $22.32 | ~8.5 h | ~$190 |
 | 4× A100 80GB | — | ~11 h | — |
 
