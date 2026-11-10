@@ -6,6 +6,7 @@
 #        bash scripts/ladder/run_all.sh --gpus 0,1,2   and   python scripts/run_jobs.py scripts/ladder/side.txt --gpus 3
 set -euo pipefail
 cd "$(dirname "$0")/../.."
+if [[ -z "${VIRTUAL_ENV:-}" && -f .venv/bin/activate ]]; then source .venv/bin/activate; fi
 for p in preflight phase1 phase2 phase3 phase4 phase5 phase6 evals; do
     echo "=== $p ==="
     python scripts/run_jobs.py "scripts/ladder/$p.txt" "$@"

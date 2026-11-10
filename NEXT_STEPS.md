@@ -12,11 +12,39 @@ Two losses stay because they constrain the model rather than carry information a
 
 We run on one pod with **4× H100 80GB**. The job runner uses whatever GPUs it sees, so 2, 4 or 8 of any 80GB card work.
 
+Lambda, 4× H100 SXM, image **GPU Base 24.04** (any Ubuntu 22.04/24.04 image works). Set up as the `ubuntu` user, inside tmux, so an SSH drop doesn't kill the queue:
+
+```bash
+git clone https://github.com/ahilanks/latents && cd latents
+```
+
+```bash
+cp /path/to/your/.env .env
+```
+
+```bash
+tmux new -s ladder
+```
+
 ```bash
 bash setup.sh
-python -m pytest tests/cpu -q                       # 34 CPU tests, ~30 s (kernel stubs, no GPU needed)
-bash scripts/ladder/run_all.sh                      # preflight, phases 1-6, eval suite; stops at the first failed gate
 ```
+
+```bash
+source .venv/bin/activate
+```
+
+```bash
+python -m pytest -q
+```
+
+```bash
+bash scripts/ladder/run_all.sh
+```
+
+- `setup.sh` creates `.venv` with Python 3.12 (the pinned kernel wheels are 3.12 builds) and installs torch 2.8 + CUDA 12.8 into it.
+- `python -m pytest -q` runs the 34 CPU tests (~30 s, kernel stubs, no GPU needed).
+- `run_all.sh` runs preflight, phases 1–6 and the eval suite, and stops at the first failed gate.
 
 On 4 GPUs, give the side track its own GPU so it overlaps the ladder:
 

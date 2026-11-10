@@ -21,6 +21,40 @@ mkdir -p runs "${WANDB_DIR:-runs/wandb}"
 
 have_cmd() { command -v "$1" >/dev/null 2>&1; }
 
+# Root on RunPod; the "ubuntu" user with passwordless sudo on Lambda.
+SUDO=""
+if [[ $EUID -ne 0 ]]; then SUDO="sudo"; fi
+apt_install() {
+    $SUDO env DEBIAN_FRONTEND=noninteractive apt-get update -qq
+    $SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y "$@"
+}
+
+ensure_python_env() {
+    # The pinned kernel wheels are CPython 3.12 builds. Use the system python3 when it is 3.12 and pip may install
+    # into it (RunPod). Otherwise create .venv with a Python 3.12 from uv: Ubuntu 24.04 images (e.g. Lambda
+    # "GPU Base 24.04") mark the system Python as externally managed, Ubuntu 22.04 images only have 3.10.
+    if [[ -n "${VIRTUAL_ENV:-}" ]]; then
+        :
+    elif [[ -x .venv/bin/python ]]; then
+        source .venv/bin/activate
+    elif python3 -c "import os, sys, sysconfig; m = os.path.join(sysconfig.get_path('stdlib'), 'EXTERNALLY-MANAGED'); sys.exit(0 if sys.version_info[:2] == (3, 12) and not os.path.exists(m) else 1)"; then
+        :
+    else
+        if ! have_cmd uv; then
+            curl -LsSf https://astral.sh/uv/install.sh | sh
+            export PATH="${HOME}/.local/bin:${PATH}"
+        fi
+        uv venv --python 3.12 --seed .venv
+        source .venv/bin/activate
+        echo "  created .venv (Python 3.12); run 'source .venv/bin/activate' in every new shell"
+    fi
+    if ! python3 -c "import sys; sys.exit(0 if sys.version_info[:2] == (3, 12) else 1)"; then
+        echo "  ERROR: the pinned kernel wheels need Python 3.12, got $(python3 --version)"
+        exit 1
+    fi
+    have_cmd python || ln -sf "$(command -v python3)" "$(dirname "$(command -v python3)")/python"
+}
+
 require_env() {
     local missing=0
     for key in WANDB_API_KEY HF_TOKEN GH_TOKEN; do
@@ -56,25 +90,19 @@ ensure_node_tooling() {
 ensure_gh_cli() {
     if have_cmd gh; then return; fi
     echo "Installing GitHub CLI"
-    export DEBIAN_FRONTEND=noninteractive
-    apt-get update
-    apt-get install -y gh
+    apt_install gh
 }
 
 ensure_tmux() {
     if have_cmd tmux; then return; fi
     echo "Installing tmux"
-    export DEBIAN_FRONTEND=noninteractive
-    apt-get update
-    apt-get install -y tmux
+    apt_install tmux
 }
 
 ensure_bwrap() {
     if have_cmd bwrap; then return; fi
     echo "Installing bwrap"
-    export DEBIAN_FRONTEND=noninteractive
-    apt-get update
-    apt-get install -y bubblewrap
+    apt_install bubblewrap
 }
 
 ensure_hf_cli() {
@@ -105,7 +133,7 @@ ensure_pushover_hook() {
     if ! have_cmd jq; then
         echo "Installing jq (needed by the notification hook)"
         export DEBIAN_FRONTEND=noninteractive
-        apt-get update && apt-get install -y jq || true
+        apt_install jq || true
     fi
 
     cat > "${cdir}/hooks/pushover-notify.sh" <<'NOTIFY_EOF'
@@ -290,6 +318,7 @@ configure_optional_auth() {
 }
 
 echo "=== H-Net Latents Setup ==="
+ensure_python_env
 
 python_version=$(python3 --version 2>&1 | awk '{print $2}')
 echo "Python: $python_version"
@@ -353,4 +382,5 @@ echo ""
 echo "Notes:"
 echo "  - .env is auto-loaded by setup (WANDB_API_KEY, HF_TOKEN, GH_TOKEN, optional PUSHOVER_*)"
 echo "  - train: python -m latents.train configs/<cfg>.yaml [key=value ...]   (see README.md)"
-echo "  - queue: scripts/run_queue.sh scripts/<phase>.txt 1 ; progress: python scripts/status.py"
+echo "  - ladder: bash scripts/ladder/run_all.sh [--gpus 0,1,2] ; table: python scripts/ladder.py report"
+if [[ -n "${VIRTUAL_ENV:-}" ]]; then echo "  - new shells: source ${VIRTUAL_ENV}/bin/activate"; fi
