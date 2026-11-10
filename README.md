@@ -45,18 +45,24 @@ Details and per-run notes: [`logistics.md`](logistics.md).
 
 ## Layout
 ```
-latents/            prepare_data.py (FineWeb-Edu → byte + GPT-2 streams), models.py (official H-Net wrapper),
-                    train.py (trainer + logging), latent.py (JEPA objectives), flops.py (FLOPs accounting)
-configs/            base.yaml + one yaml per experiment (inheritance via `base:`)
-scripts/            run_queue.sh (run a list of jobs), status.py (progress table), <phase>.txt job lists
-tests/              test_equiv.py (our forward == official H-Net forward)
+latents/            prepare_data.py (FineWeb-Edu -> byte + GPT-2 streams), models.py (official H-Net wrapper, forward
+                    options for the ladder), train.py (trainer: 1 GPU / torchrun / CPU, early kill, exact FLOPs),
+                    latent.py (JEPA objectives, regularisers, CPC, levels), rollout.py (exact k-step rollout),
+                    routing.py (surprise / sampled routers), nested.py (levels >= 2), flops.py, tasks.py (phase-6 task)
+configs/            base.yaml + one yaml per experiment (inheritance via `base:`); ladder/ = one config per rung,
+                    side/ = side-track runs, task/ = phase-6 fine-tunes
+scripts/            ladder.py (rungs, gates, report, job files), run_jobs.py (multi-GPU queue with gates),
+                    preflight.py (GPU smoke test), eval_suite.py (OOD/perturbed BPB, zero-shot, chunk probes),
+                    latent_cot.py (phase 6), ladder/*.txt job files + run_all.sh, older phase job lists
+tests/              cpu/ (34 CPU tests with pure-PyTorch kernel stubs), GPU scripts test_*.py
 third_party/hnet    official goombalab/hnet @ 3673fe1 (installed by setup.sh)
 ```
 
 ## Usage
 ```bash
 bash setup.sh                                   # deps, pinned kernels, official H-Net, data (SKIP_DATA=1 to skip)
-python -m latents.train configs/s0_hnet.yaml    # any key can be overridden: train.lr=1e-3 name=foo
-scripts/run_queue.sh scripts/s0_main.txt 1      # run a phase's jobs (1 at a time is fastest on 1 GPU)
-python scripts/status.py                        # progress / final val BPB of local runs
+python -m pytest -q                             # CPU tests (tests/cpu)
+bash scripts/ladder/run_all.sh                  # the whole ladder in NEXT_STEPS.md, gated, on all visible GPUs
+python scripts/ladder.py report                 # rung table with paired deltas and pass/fail
+python -m latents.train configs/s0_hnet.yaml    # a single run; any key can be overridden: train.lr=1e-3 name=foo
 ```

@@ -1,0 +1,7 @@
+# Side track (independent of the ladder): is the current joint result real? Fill idle GPUs with these.
+python -m latents.train configs/side/plain_N5_T7.yaml name=side-f3-plain-s1 train.seed=1 train.total_bytes=3e9 train.eval_every=2000
+python -m latents.train configs/side/plain_N5_T7.yaml name=side-f3-plain-3p2B-s0 train.total_bytes=3.2e9 train.eval_every=2000
+python -m latents.train configs/side/latent_decay.yaml name=side-decay-s0 train.seed=0
+python -m latents.train configs/side/latent_decay.yaml name=side-decay-s1 train.seed=1
+[gpus=half] python -m latents.train configs/side/latent_N5_T7.yaml name=side-f10-latent-s0 train.total_bytes=1e10 train.eval_every=4000
+[gpus=half] python -m latents.train configs/side/plain_N5_T7.yaml name=side-f10-plain-s0 train.total_bytes=1e10 train.eval_every=4000

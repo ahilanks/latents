@@ -1,0 +1,5 @@
+# R15: rollout at level 2 (2 steps, predictor-only).
+base: ladder/r14_level2_router.yaml
+model:
+  nest:
+    rollout_k: 2

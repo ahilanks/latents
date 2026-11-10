@@ -1,0 +1,10 @@
+# Option E (only if R7-R9 all fail): boundaries sampled from the learned router, REINFORCE with reward = -latent loss.
+base: ladder/r6_detach_trunk.yaml
+group: ladder-P2
+model:
+  pool_k: 0
+  router: learned
+  N: 4
+latent:
+  router_grad: reinforce
+  beta_rf: 1.0

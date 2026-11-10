@@ -1,0 +1,4 @@
+# R4: fixed boundaries every 4 bytes instead of the learned router (defers the router problem to phase 2).
+base: ladder/r3_detach_main.yaml
+model:
+  pool_k: 4

@@ -1,0 +1,7 @@
+# R10: 2-step rollout loss with predictor-only gradients (the S2c recipe) on the phase-2 winner.
+base: ladder/p2_best.yaml
+group: ladder-P3
+latent:
+  beta_r: 1.0
+  rollout_predictor_only: true
+  rollout_k: 2

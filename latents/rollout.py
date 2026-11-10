@@ -1,15 +1,18 @@
-"""Exact 2-step rollout through the H-Net main network (V-JEPA 2-AC rollout loss on chunks).
+"""Exact k-step rollout through an attention-only predictor (V-JEPA 2-AC rollout loss on chunks).
 
-Pass 1 is the normal teacher-forced main-network forward (official modules, flash-attn varlen); we
-capture each layer's post-rotary qkv via a pre-hook on `inner_attn`, so it stays inside autograd.
-Pass 2 runs only the rollout tokens: the token at position p has input ĉ_p = head(P(c≤p-1)) and attends to
-the pass-1 keys/values at positions ≤ p-1 *and itself*:
+Pass 1 is the normal teacher-forced predictor forward (official modules, flash-attn varlen); each layer's
+post-rotary qkv is captured by a pre-hook on `inner_attn`, so it stays inside autograd.
 
-    out_p = P(c_{<p}, ĉ_p)   →   head → compared with sg(c̄_{p+1})
+Rollout pass s (s = 2..k) holds one token per slot p. That token belongs to the chain of anchor j = p - s + 1
+and stands for position p: its input is ĉ^{(s-1)}_p, the (s-1)-step prediction of c_p made from c_{<=j}.
+It attends to the pass-1 keys at positions <= j, to the earlier tokens of its own chain (pass t at slot
+p - (s - t), t = 2..s-1), and to itself:
 
-This is P(c≤j, ĉ_{j+1}) with j = p-1, without recomputing pass 1. Attention uses SDPA over
-[K1 ; K_rollout] with an explicit mask on padded rows.
-Sanity check (tests/test_rollout.py): if ĉ_p := c_p, pass 2 must reproduce pass-1 outputs.
+    out^{(s)}_p = P(c_{<=j}, ĉ_{j+1}, ..., ĉ_{j+s-1})   ->   head  ->  compared with sg(c̄_{j+s}) = sg(c̄_{p+1})
+
+For k = 2 this is exactly the original 2-step rollout. Attention uses SDPA over [K1 ; K^2 ; ... ; K^s] with
+an explicit mask (one allowed key per earlier chain pass).
+Sanity check (tests): if every rollout input is the true chunk, every pass reproduces pass 1.
 """
 import torch
 import torch.nn.functional as F
@@ -18,19 +21,50 @@ from torch.nn.attention import SDPBackend, sdpa_kernel
 sdpa_kernel_backend = SDPBackend.EFFICIENT_ATTENTION  # overridable in tests
 
 
-class Rollout:
-    def __init__(self, model, predictor_only=False):
-        self.predictor_only = predictor_only
-        self.inner = model.backbone.main_network  # innermost HNet (stage 1)
-        self.iso = self.inner.main_network
-        assert all(a in "tT" for a in self.iso.arch_full), "rollout needs an attention-only main network"
-        self.cache = []
-        self.iso.register_forward_pre_hook(lambda mod, args: self.cache.clear())
-        for blk in self.iso.layers:
+class QKVCapture:
+    """Captures the post-rotary qkv of every attention layer of one Isotropic stack, per `tag`.
+    One capture per stack (shared stacks, e.g. tied levels, set `tag` before each call)."""
+
+    def __init__(self, iso):
+        self.tag = None
+        self.store = {}
+        iso.register_forward_pre_hook(self._start)
+        for blk in iso.layers:
             blk.mixer.inner_attn.register_forward_pre_hook(self._capture)
 
+    def _start(self, mod, args):
+        self.store[self.tag] = []
+
     def _capture(self, mod, args):
-        self.cache.append(args[0])  # qkv: (T1, 3, H, hd), post-rotary
+        self.store.setdefault(self.tag, []).append(args[0])  # qkv: (T, 3, H, hd), post-rotary
+
+    def get(self, tag):
+        return self.store.get(tag, [])
+
+    def clear(self, tag=None):
+        self.store.pop(tag, None)
+
+
+def capture_for(iso):
+    if getattr(iso, "_qkv_capture", None) is None:
+        iso._qkv_capture = QKVCapture(iso)
+    return iso._qkv_capture
+
+
+class Rollout:
+    def __init__(self, iso, pad=None, predictor_only=False, k=2, tag=None, in_add=None):
+        """iso: the predictor's Isotropic stack (attention only); pad: its pad_dimension parameter (or None);
+        in_add: callable -> (D,) tensor added to every rollout input after padding (e.g. a level embedding)."""
+        assert all(a in "tT" for a in iso.arch_full), "rollout needs an attention-only predictor"
+        assert k >= 2
+        self.iso, self.pad, self.k, self.tag, self.in_add = iso, pad, int(k), tag, in_add
+        self.predictor_only = predictor_only
+        self.cap = capture_for(iso)
+
+    @classmethod
+    def for_main(cls, model, **kw):
+        inner = model.backbone.main_network  # innermost HNet (stage 1)
+        return cls(inner.main_network, pad=inner.pad_dimension, **kw)
 
     # ------------------------------------------------------------------ helpers
     @staticmethod
@@ -47,26 +81,44 @@ class Rollout:
         M = x.shape[1]
         f = torch.outer(torch.arange(M, device=x.device, dtype=torch.float32), inv_freq.float())
         cos, sin = f.cos()[None, :, None, :].to(x.dtype), f.sin()[None, :, None, :].to(x.dtype)
-        x1, x2, rest = x[..., : rd // 2], x[..., rd // 2 : rd], x[..., rd:]
+        x1, x2, rest = x[..., : rd // 2], x[..., rd // 2: rd], x[..., rd:]
         return torch.cat((x1 * cos - x2 * sin, x2 * cos + x1 * sin, rest), dim=-1)
 
-    def run(self, x_in, cu1, rollout_in):
-        """x_in unused (pass-1 already ran). rollout_in: (T1, D0) inputs for every slot (slot p's input ĉ_p).
-        Returns pass-2 outputs (T1, D1) in packed order."""
-        T1 = rollout_in.shape[0]
-        B, M, lens, row, pos = self.layout(cu1, T1)
-        assert len(self.cache) == len(self.iso.layers), "pass-1 qkv not captured"
-        pad = self.inner.pad_dimension
-        h = rollout_in if pad is None else torch.cat((rollout_in, pad.expand(T1, -1).to(rollout_in.dtype)), -1)
-        D1 = h.shape[-1]
-        hp = h.new_zeros(B, M, D1)
+    @staticmethod
+    def pass_mask(s, B, M, lens, device):
+        """(B, 1, M, s*M): block 0 = pass-1 keys i <= p - s + 1 (and i < len); block t-1 (t = 2..s) = i == p - (s - t)."""
+        p = torch.arange(M, device=device)
+        hist = (p[None, :] <= p[:, None] - (s - 1))[None] & (p[None, None, :] < lens[:, None, None])
+        blocks = [hist]
+        for t in range(2, s + 1):
+            d = s - t
+            blocks.append((p[None, :] == p[:, None] - d)[None].expand(B, -1, -1))
+        return torch.cat(blocks, dim=-1)[:, None]
+
+    def _pass1_kv(self, B, M, row, pos):
+        caches = self.cap.get(self.tag)
+        assert len(caches) == len(self.iso.layers), "pass-1 qkv not captured (call the predictor first)"
+        kv = []
+        for qkv1 in caches:
+            if self.predictor_only:
+                qkv1 = qkv1.detach()
+            k1 = qkv1.new_zeros(B, M, *qkv1.shape[2:])
+            v1 = qkv1.new_zeros(B, M, *qkv1.shape[2:])
+            k1[row, pos] = qkv1[:, 1]
+            v1[row, pos] = qkv1[:, 2]
+            kv.append(([k1], [v1]))
+        return kv
+
+    def run_pass(self, s, rin, layout, kv):
+        """One rollout pass. rin: (T1, D_in) inputs per slot. kv: per layer ([K1, K2..], [V1, V2..]), appended to."""
+        B, M, lens, row, pos = layout
+        T1 = rin.shape[0]
+        h = rin if self.pad is None else torch.cat((rin, self.pad.expand(T1, -1).to(rin.dtype)), -1)
+        if self.in_add is not None:
+            h = h + self.in_add().to(h.dtype)
+        hp = h.new_zeros(B, M, h.shape[-1])
         hp[row, pos] = h
-        # mask (B, 1, M, 2M): key i<M allowed iff i <= p-1 and i < len; key M+i allowed iff i == p
-        p = torch.arange(M, device=h.device)
-        hist = (p[None, :] <= p[:, None] - 1)  # (M, M) strictly causal
-        hist = hist[None] & (p[None, None, :] < lens[:, None, None])  # (B, M, M)
-        selfm = torch.eye(M, dtype=torch.bool, device=h.device)[None].expand(B, -1, -1)
-        mask = torch.cat((hist, selfm), dim=-1)[:, None]  # (B,1,M,2M)
+        mask = self.pass_mask(s, B, M, lens, h.device)
         res = None
         hcur = hp
         for li, blk in enumerate(self.iso.layers):
@@ -77,34 +129,51 @@ class Rollout:
             if mx.rotary_emb_dim > 0:
                 q = self.rotary(q, mx.rotary_emb.inv_freq, mx.rotary_emb_dim)
                 k = self.rotary(k, mx.rotary_emb.inv_freq, mx.rotary_emb_dim)
-            qkv1 = self.cache[li].detach() if self.predictor_only else self.cache[li]
-            k1 = qkv1.new_zeros(B, M, *qkv1.shape[2:])
-            v1 = qkv1.new_zeros(B, M, *qkv1.shape[2:])
-            k1[row, pos] = qkv1[:, 1]
-            v1[row, pos] = qkv1[:, 2]
-            K = torch.cat((k1, k.to(k1.dtype)), 1).transpose(1, 2)
-            V = torch.cat((v1, v.to(v1.dtype)), 1).transpose(1, 2)
+            ks, vs = kv[li]
+            ks.append(k.to(ks[0].dtype))
+            vs.append(v.to(vs[0].dtype))
+            K = torch.cat(ks, 1).transpose(1, 2)
+            V = torch.cat(vs, 1).transpose(1, 2)
             with sdpa_kernel(sdpa_kernel_backend):  # mem-efficient: never fall back to the O(M^2)-memory math kernel
-                o = F.scaled_dot_product_attention(q.to(k1.dtype).transpose(1, 2), K, V, attn_mask=mask)
+                o = F.scaled_dot_product_attention(q.to(K.dtype).transpose(1, 2), K, V, attn_mask=mask)
             hcur = mx.out_proj(o.transpose(1, 2).reshape(B, M, -1))
             if blk.mlp is not None:
                 hcur, res = blk.norm2(hcur, residual=res, prenorm=True, residual_in_fp32=True)
                 hcur = blk.mlp(hcur)
         z = self.iso.rmsnorm(hcur, residual=res, prenorm=False, residual_in_fp32=True)
-        self.cache.clear()
         return z[row, pos]  # (T1, D1)
 
-    def loss(self, model, lat, out, pred_all, tgt):
-        """pred_all: head(P(c≤t)) for every chunk t (T1, D0); tgt: c̄ (T1, D0)."""
+    def run(self, x_in, cu1, rollout_in):
+        """Single 2-step pass with given inputs (kept for tests / backwards compatibility)."""
+        layout = self.layout(cu1, rollout_in.shape[0])
+        kv = self._pass1_kv(*layout[:2], layout[3], layout[4])
+        z = self.run_pass(2, rollout_in, layout, kv)
+        self.cap.clear(self.tag)
+        return z
+
+    def losses(self, head, chunks, cu1, pred_all, tgt):
+        """head: predictor head; chunks: true chunk inputs c (T1, D_in); pred_all: head(P(c<=t)) (T1, D_t);
+        tgt: c̄ (T1, D_t). Returns {s: L1 of the s-step prediction} and {s: copy baseline at horizon s}."""
         T1 = tgt.shape[0]
-        B, M, lens, row, pos = self.layout(out.cu1, T1)
-        # slot p gets ĉ_p = pred_all[p-1]; slot 0 of each row has no prediction -> feed its true chunk (masked from loss)
-        prev = torch.roll(pred_all, 1, 0).to(out.chunks.dtype)
-        rin = torch.where((pos == 0)[:, None], out.chunks, prev)
-        if self.predictor_only:
-            rin = rin.detach()
-        z2 = self.run(None, out.cu1, rin)
-        pred2 = lat.head(z2).float()
-        valid = (pos >= 1) & (pos + 1 < lens[row])
-        idx = torch.nonzero(valid).squeeze(1)
-        return (pred2[idx] - tgt[idx + 1]).abs().mean()
+        layout = self.layout(cu1, T1)
+        B, M, lens, row, pos = layout
+        kv = self._pass1_kv(B, M, row, pos)
+        prev_pred = pred_all
+        out, copy = {}, {}
+        for s in range(2, self.k + 1):
+            # slot p gets the (s-1)-step prediction made at slot p-1; slots without an anchor get the true chunk
+            fed = torch.roll(prev_pred, 1, 0).to(chunks.dtype)
+            rin = torch.where((pos >= s - 1)[:, None], fed, chunks)
+            if self.predictor_only:
+                rin = rin.detach()
+            z = self.run_pass(s, rin, layout, kv)
+            pred = head(z).float()
+            valid = (pos >= s - 1) & (pos + 1 < lens[row])
+            idx = torch.nonzero(valid).squeeze(1)
+            if idx.numel():
+                out[s] = (pred[idx] - tgt[idx + 1]).abs().mean()
+                with torch.no_grad():
+                    copy[s] = (tgt[idx - (s - 1)] - tgt[idx + 1]).abs().mean()
+            prev_pred = pred
+        self.cap.clear(self.tag)
+        return out, copy

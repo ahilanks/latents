@@ -1,0 +1,11 @@
+# Phase 3: longer horizons. Soft gates: if a horizon fails, the longer ones are skipped.
+python -m latents.train configs/ladder/r10_rollout2.yaml name=L-R10-s0 train.seed=0 group=ladder-P3 train.kill_ref=$(python scripts/ladder.py name @P2 0) train.kill_margin=0.03
+python -m latents.train configs/ladder/r10_rollout2.yaml name=L-R10-s1 train.seed=1 group=ladder-P3 train.kill_ref=$(python scripts/ladder.py name @P2 1) train.kill_margin=0.03
+gate R10 soft
+python -m latents.train configs/ladder/r11a_rollout4.yaml name=L-R11a-s0 train.seed=0 group=ladder-P3 train.kill_ref=L-R10-s0 train.kill_margin=0.03
+python -m latents.train configs/ladder/r11a_rollout4.yaml name=L-R11a-s1 train.seed=1 group=ladder-P3 train.kill_ref=L-R10-s1 train.kill_margin=0.03
+gate R11a soft
+[gpus=half] python -m latents.train configs/ladder/r11b_rollout8.yaml name=L-R11b-s0 train.seed=0 group=ladder-P3 train.kill_ref=L-R11a-s0 train.kill_margin=0.03
+[gpus=half] python -m latents.train configs/ladder/r11b_rollout8.yaml name=L-R11b-s1 train.seed=1 group=ladder-P3 train.kill_ref=L-R11a-s1 train.kill_margin=0.03
+barrier
+select P3

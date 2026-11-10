@@ -1,0 +1,6 @@
+# Phase 6: latent chain of thought on synthetic arithmetic (after phase 3 picked P3).
+sh python -m latents.tasks --out data/task_arith
+python -m latents.train configs/task/arith_p3.yaml name=L-T6a-s0 train.init_from=runs/$(python scripts/ladder.py name @P3 0)/final.pt
+python -m latents.train configs/task/arith_r0.yaml name=L-T6b-s0 train.init_from=runs/L-R0-s0/final.pt
+barrier
+sh python scripts/latent_cot.py runs/L-T6a-s0 runs/L-T6b-s0 --k 0,2,4,8,16,oracle

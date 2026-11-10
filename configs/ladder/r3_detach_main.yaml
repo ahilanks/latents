@@ -1,0 +1,4 @@
+# R3: no byte gradient into the main net / head: the predictor learns only from the latent loss.
+base: ladder/r2_decode_pred.yaml
+latent:
+  detach_main: true

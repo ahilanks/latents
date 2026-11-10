@@ -212,3 +212,14 @@ Queued: BPE @3B (parity check) and the no-latent control @3B.
 Decomposition of the −0.168 gain vs H-Net @3B: architecture/compression (N=5, shallower main) **−0.139**, latent loss **−0.029** (paired seed 0).
 At 0.6B it was the reverse (arch −0.010, latent −0.089). So the latent loss mainly speeds early learning and still helps at 3B. The finer-chunk architecture pays off with more data.
 Note: the plain N5·T7 router also drifts to L1/L0 ≈ 0.29 at 3B, so its FLOPs rise like the latent model's.
+
+## 2026-11-10
+
+**Ladder code (no GPU runs yet).** Everything in `NEXT_STEPS.md` is implemented: one config per rung in `configs/ladder/`,
+gates and phase-winner selection in `scripts/ladder.py`, a multi-GPU queue with asynchronous gates (`scripts/run_jobs.py`),
+a GPU preflight (`scripts/preflight.py`), data-parallel training (torchrun), early kill against a reference run, exact
+per-batch FLOPs (now including the EMA target encoder, rollout passes and nested levels), exact k-step rollout, nested
+levels with top-down, the surprise / identity / STE / REINFORCE routers, the eval suite and the latent chain-of-thought
+evaluation. 34 CPU tests (`tests/cpu`, official H-Net modules with pure-PyTorch kernel stubs) cover equivalence with the
+official forward, causality of every variant, gradient wiring, rollout exactness, the trainer (incl. 2-process DDP),
+gates and job files. ⚠️ R0 re-runs the hcD3 recipe first to confirm the refactor reproduces 1.2733 / 1.2970.

@@ -1,0 +1,9 @@
+# Side track: H-Net with the final architecture (N=5, main T7) and no latent loss (the 3B control).
+base: s0_hnet.yaml
+group: side
+name: side-plain
+model:
+  N: 5
+  arch_layout: ["m4", ["T7"], "m4"]
+train:
+  lr: 2.0e-3

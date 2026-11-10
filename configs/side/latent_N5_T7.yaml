@@ -1,0 +1,7 @@
+# Side track: the final joint latent recipe (EMA 0.99, MLP head, N=5, main T7) = hcD3 / f3_D3_mlp_N5_T7.
+base: hc_best.yaml
+group: side
+name: side-latent
+model:
+  N: 5
+  arch_layout: ["m4", ["T7"], "m4"]

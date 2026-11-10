@@ -1,0 +1,10 @@
+# R9 (option C): cut where a small byte-level latent predictor is surprised (threshold steered to 1/N).
+base: ladder/r6_detach_trunk.yaml
+group: ladder-P2
+model:
+  pool_k: 0
+  router: surprise
+  N: 4
+  surprise:
+    warmup: 0.1
+    thr_lr: 0.05

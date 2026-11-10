@@ -1,0 +1,13 @@
+# Phase 5: nest indefinitely.
+python -m latents.train configs/ladder/r16_tie.yaml name=L-R16-s0 train.seed=0 group=ladder-P5 train.kill_ref=$(python scripts/ladder.py name @P4 0) train.kill_margin=0.03
+python -m latents.train configs/ladder/r16_tie.yaml name=L-R16-s1 train.seed=1 group=ladder-P5 train.kill_ref=$(python scripts/ladder.py name @P4 1) train.kill_margin=0.03
+gate R16
+python -m latents.train configs/ladder/r17_level3.yaml name=L-R17-s0 train.seed=0 group=ladder-P5 train.kill_ref=L-R16-s0 train.kill_margin=0.03
+python -m latents.train configs/ladder/r17_level3.yaml name=L-R17-s1 train.seed=1 group=ladder-P5 train.kill_ref=L-R16-s1 train.kill_margin=0.03
+gate R17
+python -m latents.train configs/ladder/r18_depth_rule.yaml name=L-R18-s0 train.seed=0 group=ladder-P5 train.kill_ref=L-R17-s0 train.kill_margin=0.03
+python -m latents.train configs/ladder/r18_depth_rule.yaml name=L-R18-s1 train.seed=1 group=ladder-P5 train.kill_ref=L-R17-s1 train.kill_margin=0.03
+gate R18 soft
+python -m latents.train configs/ladder/r19_compute_penalty.yaml name=L-R19-s0 train.seed=0 group=ladder-P5 train.kill_ref=L-R18-s0 train.kill_margin=0.03
+python -m latents.train configs/ladder/r19_compute_penalty.yaml name=L-R19-s1 train.seed=1 group=ladder-P5 train.kill_ref=L-R18-s1 train.kill_margin=0.03
+barrier

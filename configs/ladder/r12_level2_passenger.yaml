@@ -1,0 +1,14 @@
+# R12: add level 2 as a passenger: encoder (m2) + predictor (T3) over level-1 chunks, fixed chunks of 3,
+# its own latent loss; no top-down and no gradient into level 1, so it cannot help or hurt level 1 yet.
+base: ladder/p3_best.yaml
+group: ladder-P4
+model:
+  nest:
+    levels: 2
+    enc: m2
+    pred: T3
+    router: pool
+    ratio: 3
+    topdown: false
+    input_grad: false
+    tie: none

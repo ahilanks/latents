@@ -1,0 +1,21 @@
+# Phase 4: a second level.
+python -m latents.train configs/ladder/r12_level2_passenger.yaml name=L-R12-s0 train.seed=0 group=ladder-P4 train.kill_ref=$(python scripts/ladder.py name @P3 0) train.kill_margin=0.03
+python -m latents.train configs/ladder/r12_level2_passenger.yaml name=L-R12-s1 train.seed=1 group=ladder-P4 train.kill_ref=$(python scripts/ladder.py name @P3 1) train.kill_margin=0.03
+gate R12
+python -m latents.train configs/ladder/r13_topdown.yaml name=L-R13-s0 train.seed=0 group=ladder-P4 train.kill_ref=L-R12-s0 train.kill_margin=0.03
+python -m latents.train configs/ladder/r13_topdown.yaml name=L-R13-s1 train.seed=1 group=ladder-P4 train.kill_ref=L-R12-s1 train.kill_margin=0.03
+gate R13
+python -m latents.train configs/ladder/r13b_input_grad.yaml name=L-R13b-s0 train.seed=0 group=ladder-P4 train.kill_ref=L-R13-s0 train.kill_margin=0.03
+python -m latents.train configs/ladder/r13b_input_grad.yaml name=L-R13b-s1 train.seed=1 group=ladder-P4 train.kill_ref=L-R13-s1 train.kill_margin=0.03
+gate R13b
+python -m latents.train configs/ladder/r14_level2_router.yaml name=L-R14-s0 train.seed=0 group=ladder-P4 train.kill_ref=L-R13b-s0 train.kill_margin=0.03
+python -m latents.train configs/ladder/r14_level2_router.yaml name=L-R14-s1 train.seed=1 group=ladder-P4 train.kill_ref=L-R13b-s1 train.kill_margin=0.03
+gate R14
+python -m latents.train configs/ladder/r15_level2_rollout.yaml name=L-R15-s0 train.seed=0 group=ladder-P4 train.kill_ref=L-R14-s0 train.kill_margin=0.03
+python -m latents.train configs/ladder/r15_level2_rollout.yaml name=L-R15-s1 train.seed=1 group=ladder-P4 train.kill_ref=L-R14-s1 train.kill_margin=0.03
+barrier
+select P4
+[gpus=half] python -m latents.train configs/ladder/p4_best.yaml name=L-M3-s0 train.seed=0 group=ladder-P4 train.total_bytes=3e9 train.eval_every=2000
+[gpus=half] python -m latents.train configs/ladder/p4_best.yaml name=L-M3-s1 train.seed=1 group=ladder-P4 train.total_bytes=3e9 train.eval_every=2000
+barrier
+gate M3

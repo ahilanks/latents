@@ -1,0 +1,8 @@
+# R7 (option D): learned boundaries again, router q,k frozen at identity: cut where the latent-trained encoder
+# changes direction; the ratio loss sets the count (N=4 to match R4's chunk size).
+base: ladder/r6_detach_trunk.yaml
+group: ladder-P2
+model:
+  pool_k: 0
+  router: identity
+  N: 4

@@ -1,0 +1,4 @@
+# Side track: the joint latent recipe with the latent weight decayed to 0 during the LR cooldown.
+base: side/latent_N5_T7.yaml
+latent:
+  beta_schedule: cooldown

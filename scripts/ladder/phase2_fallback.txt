@@ -1,0 +1,9 @@
+# Only if select P2 found no passing router: REINFORCE (option E).
+python -m latents.train configs/ladder/re_reinforce.yaml name=L-RE-s0 train.seed=0 group=ladder-P2 train.kill_ref=L-R6-s0 train.kill_margin=0.06
+python -m latents.train configs/ladder/re_reinforce.yaml name=L-RE-s1 train.seed=1 group=ladder-P2 train.kill_ref=L-R6-s1 train.kill_margin=0.06
+barrier
+select P2
+[gpus=half] python -m latents.train configs/ladder/p2_best.yaml name=L-M2-s0 train.seed=0 group=ladder-P2 train.total_bytes=3e9 train.eval_every=2000
+[gpus=half] python -m latents.train configs/ladder/p2_best.yaml name=L-M2-s1 train.seed=1 group=ladder-P2 train.total_bytes=3e9 train.eval_every=2000
+barrier
+gate M2

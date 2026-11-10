@@ -1,0 +1,9 @@
+# Only if gate R6 failed: CPC negatives instead of the variance floor, then milestone 1 on R6b.
+python -m latents.train configs/ladder/r6b_cpc.yaml name=L-R6b-s0 train.seed=0 group=ladder-P1 train.kill_ref=L-FLOOR-s0 train.kill_margin=0.01
+python -m latents.train configs/ladder/r6b_cpc.yaml name=L-R6b-s1 train.seed=1 group=ladder-P1 train.kill_ref=L-FLOOR-s1 train.kill_margin=0.01
+gate R6b
+barrier
+[gpus=half] python -m latents.train configs/ladder/r6b_cpc.yaml name=L-M1-s0 train.seed=0 group=ladder-P1 train.total_bytes=3e9 train.eval_every=2000
+[gpus=half] python -m latents.train configs/ladder/r6b_cpc.yaml name=L-M1-s1 train.seed=1 group=ladder-P1 train.total_bytes=3e9 train.eval_every=2000
+barrier
+gate M1

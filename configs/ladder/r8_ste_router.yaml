@@ -1,0 +1,9 @@
+# R8 (option A): trainable router; the latent loss reaches it through an STE on the predictor input.
+base: ladder/r6_detach_trunk.yaml
+group: ladder-P2
+model:
+  pool_k: 0
+  router: learned
+  N: 4
+latent:
+  router_grad: ste

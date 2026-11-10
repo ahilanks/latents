@@ -1,0 +1,7 @@
+# R16: one block for every level: towers share encoder/router/head/top-down, and every level uses the
+# level-1 predictor; a (zero-initialised) level embedding tells them apart.
+base: ladder/p4_best.yaml
+group: ladder-P5
+model:
+  nest:
+    tie: all

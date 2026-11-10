@@ -1,0 +1,7 @@
+# R18: depth by a fixed rule: keep going up while the top level is longer than 128 chunks (cap 6 levels).
+base: ladder/r17_level3.yaml
+model:
+  nest:
+    depth_rule: min_len
+    min_top_len: 128
+    max_levels: 6

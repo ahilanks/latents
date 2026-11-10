@@ -1,0 +1,10 @@
+# Phase 6: fine-tune the phase-3 winner (latent-only trunk trained with k-step rollout) on synthetic arithmetic
+# with written-out chains of thought (latents/tasks.py). init_from is set in scripts/ladder/phase6.txt.
+base: ladder/p3_best.yaml
+group: ladder-P6
+data_dir: data/task_arith
+train:
+  total_bytes: 2.0e+8
+  lr: 5.0e-4
+  warmup_frac: 0.05
+  eval_every: 200

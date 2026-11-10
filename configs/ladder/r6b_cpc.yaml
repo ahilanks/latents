@@ -1,0 +1,7 @@
+# R6b (only if R6 fails): CPC-style negatives from the same sequence instead of the variance floor.
+base: ladder/r6_detach_trunk.yaml
+latent:
+  reg: none
+  contrast: cpc
+  beta_cpc: 1.0
+  cpc_temp: 0.1

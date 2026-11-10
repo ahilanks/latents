@@ -1,0 +1,8 @@
+# GPU preflight of every ladder config (~1-2 min per config). Run this first on a new pod.
+sh python scripts/preflight.py --stubs-only
+python scripts/preflight.py --keep-stubs configs/ladder/floor.yaml configs/ladder/r11b_rollout8.yaml configs/ladder/r14_level2_router.yaml configs/ladder/r18_depth_rule.yaml configs/ladder/r3_detach_main.yaml configs/ladder/r6b_cpc.yaml configs/ladder/re_reinforce.yaml name=preflight0
+python scripts/preflight.py --keep-stubs configs/ladder/r0_ref.yaml configs/ladder/r12_level2_passenger.yaml configs/ladder/r15_level2_rollout.yaml configs/ladder/r19_compute_penalty.yaml configs/ladder/r4_fixed_chunks.yaml configs/ladder/r7_identity_router.yaml configs/side/latent_N5_T7.yaml name=preflight1
+python scripts/preflight.py --keep-stubs configs/ladder/r10_rollout2.yaml configs/ladder/r13_topdown.yaml configs/ladder/r16_tie.yaml configs/ladder/r1_dec_emb.yaml configs/ladder/r5_within_reg.yaml configs/ladder/r8_ste_router.yaml configs/side/latent_decay.yaml name=preflight2
+python scripts/preflight.py --keep-stubs configs/ladder/r11a_rollout4.yaml configs/ladder/r13b_input_grad.yaml configs/ladder/r17_level3.yaml configs/ladder/r2_decode_pred.yaml configs/ladder/r6_detach_trunk.yaml configs/ladder/r9_surprise_router.yaml configs/side/plain_N5_T7.yaml name=preflight3
+barrier
+sh python scripts/preflight.py --remove-stubs

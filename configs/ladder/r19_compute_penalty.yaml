@@ -1,0 +1,7 @@
+# R19: learned depth: above level 2 a compute penalty on the boundary probability replaces the ratio target,
+# so a level can send (almost) nothing up where going up does not lower the latent loss below it.
+base: ladder/r18_depth_rule.yaml
+model:
+  nest:
+    compute_penalty: 0.03
+    penalty_from_level: 3

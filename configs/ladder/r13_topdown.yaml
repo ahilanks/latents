@@ -1,0 +1,5 @@
+# R13: level-2 predictions condition the level-1 predictor (dechunk + STE, zero-initialised projection).
+base: ladder/r12_level2_passenger.yaml
+model:
+  nest:
+    topdown: true

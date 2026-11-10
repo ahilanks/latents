@@ -1,0 +1,10 @@
+# R5: within-sequence variance floor on the chunk latents (each sequence centred first). The floor is
+# auto-calibrated to half the std measured during the first 10% of training, so it is inactive while the byte
+# loss still shapes the encoder and only bites if the latent-only encoder (R6) starts to collapse per sequence.
+base: ladder/r4_fixed_chunks.yaml
+latent:
+  reg: var
+  reg_scope: within
+  beta_reg: 1.0
+  reg_gamma: auto
+  reg_gamma_frac: 0.5

@@ -1,0 +1,13 @@
+# Phase 2: learn the boundaries from the latent signal only. 6 runs, then the winner at 3B.
+python -m latents.train configs/ladder/r7_identity_router.yaml name=L-R7-s0 train.seed=0 group=ladder-P2 train.kill_ref=L-R6-s0 train.kill_margin=0.06
+python -m latents.train configs/ladder/r7_identity_router.yaml name=L-R7-s1 train.seed=1 group=ladder-P2 train.kill_ref=L-R6-s1 train.kill_margin=0.06
+python -m latents.train configs/ladder/r8_ste_router.yaml name=L-R8-s0 train.seed=0 group=ladder-P2 train.kill_ref=L-R6-s0 train.kill_margin=0.06
+python -m latents.train configs/ladder/r8_ste_router.yaml name=L-R8-s1 train.seed=1 group=ladder-P2 train.kill_ref=L-R6-s1 train.kill_margin=0.06
+python -m latents.train configs/ladder/r9_surprise_router.yaml name=L-R9-s0 train.seed=0 group=ladder-P2 train.kill_ref=L-R6-s0 train.kill_margin=0.06
+python -m latents.train configs/ladder/r9_surprise_router.yaml name=L-R9-s1 train.seed=1 group=ladder-P2 train.kill_ref=L-R6-s1 train.kill_margin=0.06
+barrier
+select P2
+[gpus=half] python -m latents.train configs/ladder/p2_best.yaml name=L-M2-s0 train.seed=0 group=ladder-P2 train.total_bytes=3e9 train.eval_every=2000
+[gpus=half] python -m latents.train configs/ladder/p2_best.yaml name=L-M2-s1 train.seed=1 group=ladder-P2 train.total_bytes=3e9 train.eval_every=2000
+barrier
+gate M2

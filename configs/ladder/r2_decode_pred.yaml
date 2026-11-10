@@ -1,0 +1,4 @@
+# R2: the decoder reads the predicted next-chunk latent head(P(c<=j)) instead of the raw main-net output.
+base: ladder/r1_dec_emb.yaml
+latent:
+  decode_from_pred: true

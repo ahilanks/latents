@@ -9,7 +9,7 @@ mc = dict(ssm_cfg=dict(chunk_size=256, d_conv=4, d_state=128, expand=2), N=6, vo
           num_heads=[4, 8], rotary_emb_dim=[32, 32], window_size=[1023, -1])
 torch.manual_seed(0)
 m = build_model(mc)
-ro = Rollout(m)
+ro = Rollout.for_main(m)
 x = torch.randint(0, 256, (3, 1024), device="cuda")
 with torch.autocast("cuda", dtype=torch.bfloat16):
     out = forward_lm(m, x)

@@ -1,0 +1,5 @@
+# R17: a third level with the shared block.
+base: ladder/r16_tie.yaml
+model:
+  nest:
+    levels: 3

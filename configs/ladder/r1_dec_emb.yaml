@@ -1,0 +1,4 @@
+# R1: the decoder gets its own byte embedding (zero-initialised, so it starts exactly at R0). Neutral.
+base: ladder/r0_ref.yaml
+model:
+  dec_byte_emb: true

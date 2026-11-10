@@ -1,0 +1,7 @@
+# R14: learned level-2 boundaries (H-Net router, ratio target 3). Its gradient comes from the level-1 latent
+# loss through the top-down dechunk + STE, so no special router trick is needed above level 1.
+base: ladder/r13b_input_grad.yaml
+model:
+  nest:
+    router: learned
+    ratio: 3

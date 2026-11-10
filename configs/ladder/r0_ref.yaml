@@ -1,0 +1,11 @@
+# Ladder R0: the current best joint recipe (= hcD3: EMA 0.99 targets, MLP head, N=5, main T7), re-run on the
+# new code. Must reproduce hcD3/hcD4 (1.2733 / 1.2970) within 0.01, otherwise the refactor changed something.
+base: hc_best.yaml
+group: ladder-P1
+name: L-R0
+model:
+  N: 5
+  arch_layout: ["m4", ["T7"], "m4"]
+train:
+  total_bytes: 6.0e+8
+  eval_every: 1000

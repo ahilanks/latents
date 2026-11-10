@@ -1,0 +1,5 @@
+# R6: no byte gradient into the encoder either: the decoder is a pure readout (own byte embedding + detached
+# encoder residual + detached predicted latent). The trunk now learns only from the latent loss. Go/no-go rung.
+base: ladder/r5_within_reg.yaml
+latent:
+  detach_trunk: true

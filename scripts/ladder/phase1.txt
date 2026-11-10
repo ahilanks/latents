@@ -1,0 +1,30 @@
+# Phase 1: pure latent trunk with fixed boundaries (NEXT_STEPS.md). ~16 0.6B runs + 3 at 3B.
+python -m latents.train configs/ladder/r0_ref.yaml name=L-R0-s0 train.seed=0 group=ladder-P1
+python -m latents.train configs/ladder/r0_ref.yaml name=L-R0-s1 train.seed=1 group=ladder-P1
+gate R0
+python -m latents.train configs/ladder/r1_dec_emb.yaml name=L-R1-s0 train.seed=0 group=ladder-P1 train.kill_ref=L-R0-s0 train.kill_margin=0.03
+python -m latents.train configs/ladder/r1_dec_emb.yaml name=L-R1-s1 train.seed=1 group=ladder-P1 train.kill_ref=L-R0-s1 train.kill_margin=0.03
+python -m latents.train configs/ladder/floor.yaml name=L-FLOOR-s0 train.seed=0 group=ladder-P1
+python -m latents.train configs/ladder/floor.yaml name=L-FLOOR-s1 train.seed=1 group=ladder-P1
+gate R1
+python -m latents.train configs/ladder/r2_decode_pred.yaml name=L-R2-s0 train.seed=0 group=ladder-P1 train.kill_ref=L-FLOOR-s0 train.kill_margin=0.01
+python -m latents.train configs/ladder/r2_decode_pred.yaml name=L-R2-s1 train.seed=1 group=ladder-P1 train.kill_ref=L-FLOOR-s1 train.kill_margin=0.01
+gate R2
+python -m latents.train configs/ladder/r3_detach_main.yaml name=L-R3-s0 train.seed=0 group=ladder-P1 train.kill_ref=L-FLOOR-s0 train.kill_margin=0.01
+python -m latents.train configs/ladder/r3_detach_main.yaml name=L-R3-s1 train.seed=1 group=ladder-P1 train.kill_ref=L-FLOOR-s1 train.kill_margin=0.01
+gate R3
+python -m latents.train configs/ladder/r4_fixed_chunks.yaml name=L-R4-s0 train.seed=0 group=ladder-P1 train.kill_ref=L-R3-s0 train.kill_margin=0.06
+python -m latents.train configs/ladder/r4_fixed_chunks.yaml name=L-R4-s1 train.seed=1 group=ladder-P1 train.kill_ref=L-R3-s1 train.kill_margin=0.06
+gate R4
+python -m latents.train configs/ladder/r5_within_reg.yaml name=L-R5-s0 train.seed=0 group=ladder-P1 train.kill_ref=L-R4-s0 train.kill_margin=0.03
+python -m latents.train configs/ladder/r5_within_reg.yaml name=L-R5-s1 train.seed=1 group=ladder-P1 train.kill_ref=L-R4-s1 train.kill_margin=0.03
+gate R5
+python -m latents.train configs/ladder/floor.yaml name=L-FLOOR3B-s0 train.seed=0 group=ladder-P1 train.total_bytes=3e9 train.eval_every=2000
+python -m latents.train configs/ladder/r6_detach_trunk.yaml name=L-R6-s0 train.seed=0 group=ladder-P1 train.kill_ref=L-FLOOR-s0 train.kill_margin=0.01
+python -m latents.train configs/ladder/r6_detach_trunk.yaml name=L-R6-s1 train.seed=1 group=ladder-P1 train.kill_ref=L-FLOOR-s1 train.kill_margin=0.01
+gate R6
+barrier
+[gpus=half] python -m latents.train configs/ladder/r6_detach_trunk.yaml name=L-M1-s0 train.seed=0 group=ladder-P1 train.total_bytes=3e9 train.eval_every=2000
+[gpus=half] python -m latents.train configs/ladder/r6_detach_trunk.yaml name=L-M1-s1 train.seed=1 group=ladder-P1 train.total_bytes=3e9 train.eval_every=2000
+barrier
+gate M1

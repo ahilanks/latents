@@ -66,6 +66,63 @@ def model_fwd_per_byte(cfg, compression=None):
     return outer + r * inner
 
 
+def _per_token(layout, d, mean_ctx, d_int, ssm=None):
+    return layout_fwd(layout, d, mean_ctx, d_int, ssm) if layout else 0.0
+
+
+def _head_fwd(kind, d_in, d_out):
+    return 2 * (d_in * 2 * d_in + 2 * d_in * d_out) if kind == "mlp" else 2 * d_in * d_out
+
+
+def step_train_flops(mc, out, lat=None, nest=None):
+    """Train FLOPs of one micro-batch from the token counts this batch actually produced.
+    = 3 x forward of everything trained (encoder, decoder, main net, towers, heads, rollout passes)
+    + 1 x forward of the EMA target encoders (no backward)."""
+    B, L = out.logits.shape[:2]
+    layout = mc["arch_layout"]
+    ssm = mc.get("ssm_cfg", {})
+    sk = {k: ssm[k] for k in ("expand", "d_state", "d_conv") if k in ssm}
+    if "chunk_size" in ssm:
+        sk["chunk"] = ssm["chunk_size"]
+    win = mc.get("window_size", [-1, -1])
+    V = mc["vocab_size"]
+    if len(layout) == 1:
+        d, di = mc["d_model"][0], mc["d_intermediate"][0]
+        return 3 * B * L * (layout_fwd(layout[0], d, causal_mean_ctx(L, win[0]), di, sk) + 2 * d * V)
+    enc, (main,), dec = layout
+    d0, d1 = mc["d_model"]
+    di0, di1 = mc["d_intermediate"]
+    ctx0 = causal_mean_ctx(L, win[0])
+    enc_f = layout_fwd(enc, d0, ctx0, di0, sk)
+    outer = enc_f + layout_fwd(dec, d0, ctx0, di0, sk) + 2 * 2 * d0 * d0 + 2 * d0 * d0 + 2 * d0 * V
+    T1 = out.chunks.shape[0]
+    main_tok = layout_fwd(main, d1, causal_mean_ctx(T1 / B, win[1]), di1, sk)
+    fwd = B * L * outer + T1 * main_tok
+    ema = 0.0
+    if lat is not None:
+        hk = lat.cfg.get("head", "linear")
+        fwd += T1 * _head_fwd(hk, d1, d0)
+        if lat.target == "ema":
+            ema += B * L * enc_f
+        if lat.rollout is not None:
+            fwd += (lat.rollout.k - 1) * T1 * (main_tok + _head_fwd(hk, d1, d0))
+    ctx = out.extras.get("levels")
+    if nest is not None and ctx is not None:
+        nc = nest.nc
+        for rec in ctx["levels"]:
+            rows = rec["cu"].numel() - 1
+            t_in, t = rec["T_in"], rec["T"]
+            e = _per_token(nc.get("enc", "m2"), d1, causal_mean_ctx(t_in / rows, -1), di1, sk)
+            p_layout = main if nest.tie == "all" else nc.get("pred", "T3")
+            p = _per_token(p_layout, d1, causal_mean_ctx(t / rows, -1), di1, sk)
+            fwd += t_in * (e + 2 * 2 * d1 * d1 + 2 * d1 * d1) + t * (p + _head_fwd(nc.get("head", "mlp"), d1, d1))
+            if lat is not None and lat.target == "ema":
+                ema += t_in * e
+            if lat is not None and rec["level"] in lat.level_rollouts:
+                fwd += (lat.level_rollouts[rec["level"]].k - 1) * t * p
+    return 3 * fwd + ema
+
+
 if __name__ == "__main__":
     import json, sys
     for p in sys.argv[1:]:

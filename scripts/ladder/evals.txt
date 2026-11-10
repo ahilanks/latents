@@ -1,0 +1,6 @@
+# Eval suite on milestone checkpoints (and the old 3B references if their final.pt is downloaded to runs/).
+sh python scripts/eval_suite.py fetch
+sh python scripts/eval_suite.py run runs/L-M1-s0 runs/L-FLOOR3B-s0
+sh python scripts/eval_suite.py run runs/L-M2-s0
+sh python scripts/eval_suite.py run runs/L-M3-s0
+sh python scripts/eval_suite.py table runs/L-FLOOR3B-s0 runs/L-M1-s0 runs/L-M2-s0 runs/L-M3-s0

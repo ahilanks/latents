@@ -1,0 +1,6 @@
+# Control: the R1 decoder with every trunk input zeroed (only its own byte embedding) = a small local byte model.
+# trunk info = floor BPB - readout BPB. No latent loss (the trunk is unused).
+base: ladder/r1_dec_emb.yaml
+model:
+  floor: true
+latent: null

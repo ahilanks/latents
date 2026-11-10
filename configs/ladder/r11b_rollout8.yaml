@@ -1,0 +1,6 @@
+# R11b: 8-step rollout.
+base: ladder/r11a_rollout4.yaml
+latent:
+  rollout_k: 8
+train:
+  micro_batch: 4

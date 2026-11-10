@@ -1,0 +1,5 @@
+# R13b: level-2 losses may send gradient into the level-1 chunks.
+base: ladder/r13_topdown.yaml
+model:
+  nest:
+    input_grad: true
