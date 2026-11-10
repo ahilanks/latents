@@ -22,6 +22,9 @@ Job file lines (blank lines and # comments ignored):
         if logs/hold_<name> exists: let everything launched so far finish, notify, and wait until the file is
         removed (e.g. to benchmark milestones before the next phase). No file: no-op.
 
+Sharing GPUs with other queues (opt-in): RUN_JOBS_MAX_PER_GPU=k launches a job on a GPU only while at most k
+processes run there (any queue), RUN_JOBS_MIN_FREE_GB=x only while it has >= x GB free. Use both for side queues
+that run next to the ladder, so independent queues cannot stack up and run a GPU out of memory.
 Logs: logs/<run>.log per job, logs/queue_<jobfile>.jsonl with one record per finished job / gate.
 Exit codes of jobs: 0 ok, 3 early-killed (latents.train kill_ref), 4 non-finite loss, other = crash.
 """
@@ -72,6 +75,18 @@ def detect_gpus():
         return []
 
 
+def gpu_load():
+    """{gpu index: (n processes, free GB)} from nvidia-smi, or {} if unavailable."""
+    try:
+        q = lambda *a: subprocess.run(["nvidia-smi", *a, "--format=csv,noheader,nounits"], capture_output=True,  # noqa: E731
+                                      text=True, timeout=30).stdout.strip().splitlines()
+        gpus = [[x.strip() for x in line.split(",")] for line in q("--query-gpu=index,uuid,memory.free")]
+        procs = [line.split(",")[0].strip() for line in q("--query-compute-apps=gpu_uuid")]
+        return {int(i): (procs.count(u), float(f) / 1024) for i, u, f in gpus}
+    except Exception:
+        return {}
+
+
 def parse(path):
     items = []
     for i, raw in enumerate(Path(path).read_text().splitlines()):
@@ -111,6 +126,8 @@ class Queue:
         self.stopped = False
         self.skip_block = None  # line of a failed soft gate: skip jobs until the next barrier
         self.port = 29500 + (os.getpid() % 500) * 10
+        self.max_per_gpu = int(os.environ["RUN_JOBS_MAX_PER_GPU"]) if os.environ.get("RUN_JOBS_MAX_PER_GPU") else None
+        self.min_free_gb = float(os.environ.get("RUN_JOBS_MIN_FREE_GB", 0))
         (ROOT / "logs").mkdir(exist_ok=True)
         self.record = open(ROOT / "logs" / f"queue_{self.path.stem}.jsonl", "a")
 
@@ -127,6 +144,21 @@ class Queue:
         if spec == "all":
             return n
         return min(int(spec), n)
+
+    def room(self, n):
+        """Opt-in guard: are there n free GPUs (of ours) with few enough jobs and enough memory? Prefers the emptiest."""
+        if self.dry or (self.max_per_gpu is None and not self.min_free_gb):
+            return True
+        load = gpu_load()
+        if not load:
+            return True
+        ok = [g for g in self.free if g in load and (self.max_per_gpu is None or load[g][0] <= self.max_per_gpu)
+              and load[g][1] >= self.min_free_gb]
+        if len(ok) < n:
+            return False
+        ok.sort(key=lambda g: (load[g][0], -load[g][1]))
+        self.free = ok[:n] + [g for g in self.free if g not in ok[:n]]
+        return True
 
     def launch(self, it):
         n = self.n_gpus(it["gpus"])
@@ -212,7 +244,8 @@ class Queue:
             if it["kind"] == "job":
                 if self.n_gpus(it["gpus"]) == 0:
                     raise SystemExit("no GPUs")
-                while len(self.free) < self.n_gpus(it["gpus"]) and not self.stopped and self.skip_block is None:
+                while ((len(self.free) < self.n_gpus(it["gpus"]) or not self.room(self.n_gpus(it["gpus"])))
+                       and not self.stopped and self.skip_block is None):
                     self.tick()
                 if self.skip_block is not None and it["line"] > self.skip_block:
                     self.log(event="skip", name=it["name"], reason=f"soft gate at line {self.skip_block} failed")

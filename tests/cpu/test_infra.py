@@ -256,3 +256,23 @@ def test_hold_waits_for_flag(tmp_path, monkeypatch):
     assert (tmp_path / "after_hold").exists() and (tmp_path / "after_u").exists()
     ev = [json.loads(line)["event"] for line in open(tmp_path / "logs" / "queue_jobs.jsonl")]
     assert ev.count("hold") == 1 and ev.count("release") == 1
+
+
+def test_gpu_guard_waits_for_room(tmp_path, monkeypatch):
+    """With RUN_JOBS_MAX_PER_GPU / RUN_JOBS_MIN_FREE_GB set, a job waits until its GPU has room."""
+    import run_jobs as Q
+    monkeypatch.setattr(Q, "ROOT", tmp_path)
+    monkeypatch.setattr(Q, "POLL", 0.05)
+    monkeypatch.setattr(Q, "notify", lambda *a: None)
+    monkeypatch.setenv("RUN_JOBS_MAX_PER_GPU", "1")
+    monkeypatch.setenv("RUN_JOBS_MIN_FREE_GB", "30")
+    (tmp_path / "logs").mkdir()
+    calls = []
+    busy, room = {0: (3, 10.0), 1: (1, 12.0)}, {0: (1, 50.0), 1: (1, 12.0)}
+    monkeypatch.setattr(Q, "gpu_load", lambda: calls.append(1) or (busy if len(calls) < 3 else room))
+    f = tmp_path / "jobs.txt"
+    f.write_text("true name=t1\n")
+    assert Q.Queue(f, [0, 1]).run() == 0
+    assert len(calls) >= 3
+    ev = [json.loads(line) for line in open(tmp_path / "logs" / "queue_jobs.jsonl")]
+    assert ev[0]["event"] == "start" and ev[0]["gpus"] == [0]
