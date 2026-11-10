@@ -175,15 +175,15 @@ def main():
     qs = sorted({m.group(1) for m in re.finditer(r"scripts/ladder/(\w+)\.txt", procs)})
     print("active queue:", ", ".join(qs) if qs else "NONE (queue not running)")
     ev = queue_events()
-    started, ended = {}, set()
+    live = {}  # replay in time order: a run restarted after an earlier end/cancel is running again
     for d in ev:
         if d.get("dry"):
             continue
         if d.get("event") == "start":
-            started[d["name"]] = d
+            live[d["name"]] = d
         elif d.get("event") in ("end", "cancel"):
-            ended.add(d["name"])
-    running = [d for n, d in started.items() if n not in ended]
+            live.pop(d["name"], None)
+    running = list(live.values())
     print(f"running jobs ({len(running)}):")
     for d in running:
         print(f"  [{d['queue']}] {d['name']} on GPU {','.join(map(str, d['gpus']))} since {d['time'][11:]}: "

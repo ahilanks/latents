@@ -223,3 +223,19 @@ levels with top-down, the surprise / identity / STE / REINFORCE routers, the eva
 evaluation. 34 CPU tests (`tests/cpu`, official H-Net modules with pure-PyTorch kernel stubs) cover equivalence with the
 official forward, causality of every variant, gradient wiring, rollout exactness, the trainer (incl. 2-process DDP),
 gates and job files. ⚠️ R0 re-runs the hcD3 recipe first to confirm the refactor reproduces 1.2733 / 1.2970.
+
+**Ladder run on 2× H100 (Lambda), 21:42 UTC.**
+- **Preflight caught three bugs:**
+  - **Level-1 rollout under untied nesting.** It read the wrong qkv capture tag, so all of phases 4–5 would have crashed.
+  - **Preflight's encoder-gradient check ran at init.** There the zero-initialised residual projection blocks the gradient, so R4/R5 failed falsely and R6's detach check passed trivially.
+  - **A CPU test deleted the live preflight stubs.**
+
+  All three are fixed (e7eedde), and every config passes preflight on GPU.
+- **Speed.** 0.24 s/step, 9.9 min for a 0.6B run: ~1.7× the A100.
+- **22:12 ❌ gate R0 (hardware, not code).** The new code gave 1.2872 / 1.3148 vs 1.2733 / 1.2970 (Δ +0.016 > 0.01). The configs are identical and the curves match at step 0; the router settled at L1/L0 ≈ 0.25 instead of ≈ 0.27.
+
+  The old code (48cd658) re-run on the same H100s gives **1.3131 / 1.3245** with L1/L0 0.25 / 0.23. So the A100 reference can't be reproduced on H100 by either code, and on the same hardware the new code is not worse (−0.018).
+
+  The cause is H100 numerics in the router: fewer chunks, so less main-net compute. Every ladder comparison is H100 vs H100 and paired by seed, so the ladder resumes at R1 with L-R0-s* as the reference (`logs/jobs/phase1_resume.txt`). It adds a same-seed replicate L-R0rep-s0 to measure run-to-run noise against the 0.01 gate tolerances.
+- **Latent loss vs none at 0.6B (seed 0).** R0 1.2872 vs the old no-latent control 1.3619 (old code, A100): −0.075, vs −0.089 before. Needs an H100 no-latent run to be paired.
+- **22:42 side track: `side-f3-plain-3p2B-s0` stopped at 6000/12207** (`runs/<name>/KILL`). Val was flat at 1.4897 → 1.4888 between steps 2000 and 4000 while its twin `side-f3-plain-s1` went 1.4721 → 1.3035. Train BPB jumped at ~2500 and the router stuck at L1/L0 ≈ 0.19. It reached 1.4397 at 6000. Rerun queued as `side-f3-plain-3p2B-s0-r2` after the ladder.
