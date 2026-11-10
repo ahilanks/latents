@@ -2,15 +2,21 @@
 
 usage:
   python scripts/eval_suite.py fetch                                download eval data into data/eval/
-  python scripts/eval_suite.py run runs/<name> [runs/<name> ...] [--tasks bpb,perturb,mc,chunks] [--limit N]
-  python scripts/eval_suite.py table runs/<name> [...]              markdown table of runs/<name>/evals.json
+  python scripts/eval_suite.py run runs/<name> [runs/<name> ...] [--tasks bpb,perturb,mc,robust,chunks] [--limit N]
+  python scripts/eval_suite.py table runs/<name> [...] [--standard] markdown table of runs/<name>/evals.json
 
 Tasks
   bpb      BPB on out-of-distribution text: code, Chinese / English Wikipedia, FineWeb-2 languages
   perturb  BPB on FineWeb-Edu val text after BLT/H-Net-style noise (antspeak, drop, randomcase, repeat, uppercase)
-  mc       zero-shot multiple choice scored by the log-likelihood of each continuation: hellaswag, piqa, arc_easy,
-           sciq (acc, acc_norm = per byte, bpb of the correct answer); lambada (target-word bpb + greedy exact
-           match, from one teacher-forced pass); blimp (good vs bad sentence)
+  mc       zero-shot multiple choice scored by the log-likelihood of each continuation (lm-eval style): hellaswag,
+           piqa, arc_easy, arc_challenge, openbookqa, sciq, siqa (acc, acc_norm = per byte, bpb of the correct
+           answer, binomial se); winogrande (partial scoring: the option is substituted into the context and the
+           shared rest of the sentence is scored); lambada (greedy exact match, target-word bpb and per-word
+           perplexity, from one teacher-forced pass); blimp (good vs bad sentence)
+  robust   HellaSwag acc_norm under the 5 BLT noises, applied to context and endings, and H-Net's robustness
+           score 100 * (noised - 0.25) / (clean - 0.25)
+The task set covers the zero-shot table of H-Net / ATDC / DeepMem (LAMBADA, HellaSwag, PIQA, ARC-e, ARC-c,
+WinoGrande, OBQA) plus SciQ / SIQA from the latent-prediction papers; `table --standard` prints it in that form.
   chunks   boundary stats on val (edge precision, space recall), morpheme-boundary F1 against SIGMORPHON 2022
            (if fetched), linear probes on chunk latents (word identity of the current chunk / of the next chunk)
 """
@@ -42,12 +48,12 @@ def _take_text(ds, field, n_bytes):
     return out
 
 
-def fetch(n_text=4_000_000):
+def fetch(n_text=4_000_000, only=None):
     from datasets import load_dataset
     (EVAL / "text").mkdir(parents=True, exist_ok=True)
     (EVAL / "mc").mkdir(parents=True, exist_ok=True)
     texts = {
-        "code": ("codeparrot/codeparrot-clean-valid", None, "valid", "content"),
+        "code": ("codeparrot/codeparrot-clean-valid", None, "train", "content"),
         "en_wiki": ("wikimedia/wikipedia", "20231101.en", "train", "text"),
         "zh_wiki": ("wikimedia/wikipedia", "20231101.zh", "train", "text"),
         "fw2_rus": ("HuggingFaceFW/fineweb-2", "rus_Cyrl", "test", "text"),
@@ -55,10 +61,27 @@ def fetch(n_text=4_000_000):
         "fw2_hin": ("HuggingFaceFW/fineweb-2", "hin_Deva", "test", "text"),
         "fw2_arb": ("HuggingFaceFW/fineweb-2", "arb_Arab", "test", "text"),
         "fw2_deu": ("HuggingFaceFW/fineweb-2", "deu_Latn", "test", "text"),
+        "wikitext103": ("Salesforce/wikitext", "wikitext-103-raw-v1", "test", "text"),
+        "pg19": ("deepmind/pg19@refs/convert/parquet|emozilla/pg19", None, "test", "text"),
     }
+    only = set(only or [])
     for name, (path, conf, split, field) in texts.items():
+        if only and name not in only:
+            continue
+        if (EVAL / "text" / f"{name}.txt").exists():
+            print("have text", name)
+            continue
         try:
-            ds = load_dataset(path, conf, split=split, streaming=True)
+            ds = None
+            for src in path.split("|"):  # alternatives; "repo@revision" pins a revision (e.g. HF's parquet export)
+                repo, _, rev = src.partition("@")
+                try:
+                    ds = load_dataset(repo, conf, split=split, streaming=True, revision=rev or None)
+                    break
+                except Exception as e:
+                    print("SKIP text", name, "from", src, type(e).__name__, str(e)[:120])
+            if ds is None:
+                raise RuntimeError("no source")
             docs = _take_text(ds, field, n_text)
             (EVAL / "text" / f"{name}.txt").write_text("\x00".join(docs))
             print("text", name, len(docs), "docs")
@@ -89,13 +112,28 @@ def fetch(n_text=4_000_000):
                          for e in load_dataset("allenai/sciq", split="test")],
         "lambada": lambda: [dict(ctx=e["text"].rsplit(" ", 1)[0], target=" " + e["text"].rsplit(" ", 1)[1])
                             for e in load_dataset("EleutherAI/lambada_openai", "default", split="test")],
+        "arc_challenge": lambda: [dict(ctx=f"Question: {e['question']}\nAnswer:", choices=[" " + c for c in e["choices"]["text"]],
+                                       label=e["choices"]["label"].index(e["answerKey"]))
+                                  for e in load_dataset("allenai/ai2_arc", "ARC-Challenge", split="test")],
+        "openbookqa": lambda: [dict(ctx=e["question_stem"], choices=[" " + c for c in e["choices"]["text"]],
+                                    label=e["choices"]["label"].index(e["answerKey"].strip()))
+                               for e in load_dataset("allenai/openbookqa", "main", split="test")],
+        "winogrande": lambda: [dict(ctxs=[e["sentence"][:e["sentence"].index("_")] + o for o in (e["option1"], e["option2"])],
+                                    cont=" " + e["sentence"][e["sentence"].index("_") + 1:].strip(), label=int(e["answer"]) - 1)
+                               for e in load_dataset("allenai/winogrande", "winogrande_xl", split="validation")],
+        "siqa": lambda: _siqa(load_dataset),
     }
     for name, fn in jobs.items():
+        if (EVAL / "mc" / f"{name}.jsonl").exists():
+            print("have mc", name)
+            continue
         try:
             dump(name, fn())
         except Exception as e:
             print("SKIP mc", name, type(e).__name__, str(e)[:200])
     for path in ("ybisk/piqa", "baber/piqa"):
+        if (EVAL / "mc" / "piqa.jsonl").exists():
+            break
         try:
             ds = load_dataset(path, split="validation")
             dump("piqa", [dict(ctx=f"Question: {e['goal']}\nAnswer:", choices=[" " + e["sol1"], " " + e["sol2"]], label=int(e["label"]))
@@ -104,6 +142,8 @@ def fetch(n_text=4_000_000):
         except Exception as e:
             print("SKIP piqa from", path, type(e).__name__, str(e)[:120])
     try:
+        if (EVAL / "mc" / "blimp.jsonl").exists():
+            raise FileExistsError("have blimp")
         from datasets import get_dataset_config_names
         rows = []
         for conf in get_dataset_config_names("nyu-mll/blimp"):
@@ -121,6 +161,17 @@ def fetch(n_text=4_000_000):
             print("seg", fname)
         except Exception as e:
             print("SKIP seg", fname, type(e).__name__)
+
+
+def _siqa(load_dataset):
+    for path in ("allenai/social_i_qa", "lighteval/siqa"):
+        try:
+            ds = load_dataset(path, split="validation")
+            return [dict(ctx=f"Q: {e['context']} {e['question']}\nA:", choices=[" " + e[k] for k in ("answerA", "answerB", "answerC")],
+                         label=int(e["label"]) - 1) for e in ds]
+        except Exception as e:
+            print("SKIP siqa from", path, type(e).__name__, str(e)[:120])
+    raise RuntimeError("no siqa source")
 
 
 # ----------------------------------------------------------------------------- model wrapper
@@ -181,8 +232,9 @@ class Scorer:
     def bos(self):
         return [self.enc.eot_token] if self.bpe else [BOS]
 
-    def continuation(self, pairs, bs=16):
-        """pairs: [(ctx_bytes, cont_bytes)] -> [(sum log p of cont in nats, n_bytes(cont), greedy_exact)]."""
+    def continuation(self, pairs, max_tokens=65536, max_bs=256):
+        """pairs: [(ctx_bytes, cont_bytes)] -> [(sum log p of cont in nats, n_bytes(cont), greedy_exact)].
+        Sequences are sorted by length and packed into batches of <= max_tokens padded positions."""
         torch = self.torch
         seqs, spans = [], []
         for ctx, cont in pairs:
@@ -190,21 +242,31 @@ class Scorer:
             s = (self.bos() + c + t)[-self.L:]
             seqs.append(s)
             spans.append(len(t))
-        res = []
-        for start in range(0, len(seqs), bs):
-            chunk = seqs[start:start + bs]
-            n = (max(len(s) for s in chunk) + 63) // 64 * 64
-            x = torch.zeros(len(chunk), n, dtype=torch.long, device=self.device)
-            for r, s in enumerate(chunk):
-                x[r, :len(s)] = torch.tensor(s, device=self.device)
+        order = sorted(range(len(seqs)), key=lambda i: len(seqs[i]))
+        res = [None] * len(seqs)
+        i = 0
+        while i < len(order):
+            n = (len(seqs[order[i]]) + 63) // 64 * 64
+            j = i
+            while j < len(order) and j - i < max_bs:
+                n_j = (len(seqs[order[j]]) + 63) // 64 * 64
+                if (j - i + 1) * n_j > max_tokens and j > i:
+                    break
+                n = n_j
+                j += 1
+            idx = order[i:j]
+            x = torch.zeros(len(idx), n, dtype=torch.long, device=self.device)
+            for r, q in enumerate(idx):
+                x[r, :len(seqs[q])] = torch.tensor(seqs[q], device=self.device)
             lp = torch.log_softmax(self.forward(x).logits.float(), -1)
-            for r, s in enumerate(chunk):
-                k = spans[start + r]
+            for r, q in enumerate(idx):
+                s, k = seqs[q], spans[q]
                 pos = torch.arange(len(s) - 1 - k, len(s) - 1, device=self.device)
                 tgt = torch.tensor(s[len(s) - k:], device=self.device)
                 lps = lp[r, pos].gather(-1, tgt[:, None]).squeeze(-1)
                 greedy = bool((lp[r, pos].argmax(-1) == tgt).all())
-                res.append((float(lps.sum()), len(pairs[start + r][1]), greedy))
+                res[q] = (float(lps.sum()), len(pairs[q][1]), greedy)
+            i = j
         return res
 
     def text_bpb(self, text_bytes, max_windows=256):
@@ -270,30 +332,49 @@ def load_jsonl(name, limit):
     return rows
 
 
+MC = ("hellaswag", "piqa", "arc_easy", "arc_challenge", "openbookqa", "sciq", "siqa", "winogrande")
+
+
+def _se(p, n):
+    return math.sqrt(max(p * (1 - p), 1e-12) / n)
+
+
+def mc_scores(sc, rows):
+    """Rows with a shared ctx and k choices, or (winogrande) k contexts and a shared continuation."""
+    pairs = [((r["ctx"].encode(), c.encode()) if "choices" in r else (c.encode(), r["cont"].encode()))
+             for r in rows for c in (r["choices"] if "choices" in r else r["ctxs"])]
+    sc_ = sc.continuation(pairs)
+    i = acc = accn = bpb_c = 0
+    for r in rows:
+        k = len(r["choices"] if "choices" in r else r["ctxs"])
+        s = sc_[i:i + k]
+        i += k
+        acc += max(range(k), key=lambda j: s[j][0]) == r["label"]
+        accn += max(range(k), key=lambda j: s[j][0] / max(s[j][1], 1)) == r["label"]
+        bpb_c += -s[r["label"]][0] / LN2 / max(s[r["label"]][1], 1)
+    n = len(rows)
+    k = len(rows[0]["choices"] if "choices" in rows[0] else rows[0]["ctxs"])
+    return dict(acc=acc / n, acc_norm=accn / n, se=_se(acc / n, n), se_norm=_se(accn / n, n),
+                bpb_correct=bpb_c / n, chance=1 / k, n=n)
+
+
 def task_mc(sc, limit):
     out = {}
-    for name in ("hellaswag", "piqa", "arc_easy", "sciq"):
+    for name in MC:
         rows = load_jsonl(name, limit)
-        if not rows:
-            continue
-        pairs = [(r["ctx"].encode(), c.encode()) for r in rows for c in r["choices"]]
-        sc_ = sc.continuation(pairs)
-        i = acc = accn = bpb_c = 0
-        for r in rows:
-            k = len(r["choices"])
-            s = sc_[i:i + k]
-            i += k
-            acc += max(range(k), key=lambda j: s[j][0]) == r["label"]
-            accn += max(range(k), key=lambda j: s[j][0] / max(s[j][1], 1)) == r["label"]
-            bpb_c += -s[r["label"]][0] / LN2 / max(s[r["label"]][1], 1)
-        out[name] = dict(acc=acc / len(rows), acc_norm=accn / len(rows), bpb_correct=bpb_c / len(rows), n=len(rows))
+        if rows:
+            out[name] = mc_scores(sc, rows)
     rows = load_jsonl("lambada", limit)
     if rows:
         s = sc.continuation([(r["ctx"].encode(), r["target"].encode()) for r in rows])
-        out["lambada"] = dict(acc=sum(g for _, _, g in s) / len(s),
+        acc = sum(g for _, _, g in s) / len(s)
+        out["lambada"] = dict(acc=acc, se=_se(acc, len(s)), ppl=math.exp(sum(-lp for lp, _, _ in s) / len(s)),
                               bpb_target=sum(-lp / LN2 / max(n, 1) for lp, n, _ in s) / len(s), n=len(s))
-    rows = load_jsonl("blimp", limit * 10 if limit else None)
-    if rows:
+    rows = load_jsonl("blimp", None)
+    if rows:  # 100 pairs per phenomenon (6.7k of 67k), all 67 phenomena; --limit scales it down further
+        cap = min(100, limit) if limit else 100
+        per_sub = {}
+        rows = [r for r in rows if per_sub.setdefault(r["subset"], []).append(1) or len(per_sub[r["subset"]]) <= cap]
         g = sc.continuation([(b"", r["good"].encode()) for r in rows])
         b = sc.continuation([(b"", r["bad"].encode()) for r in rows])
         per = {}
@@ -301,6 +382,21 @@ def task_mc(sc, limit):
             per.setdefault(r["subset"], []).append(x[0] > y[0])
         out["blimp"] = dict(acc=sum(sum(v) for v in per.values()) / len(rows),
                             acc_macro=sum(sum(v) / len(v) for v in per.values()) / len(per), n=len(rows))
+    return out
+
+
+def task_robust(sc, limit):
+    """HellaSwag under the BLT noises (context and endings), H-Net robustness score."""
+    rows = load_jsonl("hellaswag", limit or 2000)
+    if not rows:
+        return {}
+    out = {"clean": mc_scores(sc, rows)["acc_norm"]}
+    for name, fn in PERTURB.items():
+        r = random.Random(0)
+        noised = [dict(ctx=fn(x["ctx"], r), choices=[fn(c, r) for c in x["choices"]], label=x["label"]) for x in rows]
+        out[name] = mc_scores(sc, noised)["acc_norm"]
+        out[name + "_score"] = 100 * (out[name] - 0.25) / (out["clean"] - 0.25) if out["clean"] > 0.26 else None
+    out["n"] = len(rows)
     return out
 
 
@@ -397,7 +493,7 @@ def task_chunks(sc, limit):
     return out
 
 
-TASKS = {"bpb": task_bpb, "perturb": task_perturb, "mc": task_mc, "chunks": task_chunks}
+TASKS = {"bpb": task_bpb, "perturb": task_perturb, "mc": task_mc, "robust": task_robust, "chunks": task_chunks}
 
 
 def run(dirs, tasks, limit):
@@ -411,6 +507,47 @@ def run(dirs, tasks, limit):
             json.dump(res, open(p, "w"), indent=1)
         print(json.dumps(res, indent=1))
         del sc
+
+
+STANDARD = [("LAMBADA acc", "mc/lambada/acc"), ("HellaSwag acc_n", "mc/hellaswag/acc_norm"), ("PIQA acc", "mc/piqa/acc"),
+            ("ARC-e acc", "mc/arc_easy/acc"), ("ARC-c acc_n", "mc/arc_challenge/acc_norm"),
+            ("WinoGrande acc", "mc/winogrande/acc"), ("OBQA acc_n", "mc/openbookqa/acc_norm")]
+EXTRA = [("SciQ acc", "mc/sciq/acc"), ("SIQA acc", "mc/siqa/acc"), ("BLiMP acc", "mc/blimp/acc"),
+         ("LAMBADA ppl", "mc/lambada/ppl"), ("HS noise score (mean of 5)", "robust/score_mean"),
+         ("WikiText-103 BPB", "bpb/wikitext103"), ("PG19 BPB", "bpb/pg19"), ("code BPB", "bpb/code")]
+
+
+def _get(r, k):
+    v = r
+    for part in k.split("/"):
+        v = v.get(part) if isinstance(v, dict) else None
+    return v
+
+
+def standard_table(dirs):
+    """The H-Net / ATDC zero-shot table (+ extras): one row per run, accuracies in %, ± se on the 7-task average."""
+    print("| run | val BPB | " + " | ".join(n for n, _ in STANDARD) + " | avg (7) | " + " | ".join(n for n, _ in EXTRA) + " |")
+    print("|---" * (len(STANDARD) + len(EXTRA) + 3) + "|")
+    for d in dirs:
+        p = Path(d) / "evals.json"
+        if not p.exists():
+            continue
+        r = json.load(open(p))
+        rb = r.get("robust") or {}
+        sc = [rb[k + "_score"] for k in PERTURB if rb.get(k + "_score") is not None]
+        r.setdefault("robust", {})["score_mean"] = sum(sc) / len(sc) if sc else None
+        sm = Path(d) / "summary.json"
+        vb = json.load(open(sm)).get("val/bpb") if sm.exists() else None
+        acc = [_get(r, k) for _, k in STANDARD]
+        ses = [_get(r, k.rsplit("/", 1)[0] + "/" + ("se_norm" if k.endswith("acc_norm") else "se")) for _, k in STANDARD]
+        avg = sum(acc) / len(acc) if all(a is not None for a in acc) else None
+        se = math.sqrt(sum(s * s for s in ses)) / len(ses) if all(s is not None for s in ses) else None
+        f = lambda v, pct: "–" if v is None else (f"{100 * v:.1f}" if pct else f"{v:.3f}")  # noqa: E731
+        cells = [f(a, True) for a in acc] + [("–" if avg is None else f"{100 * avg:.1f}" + (f" ± {100 * se:.1f}" if se else ""))]
+        cells += [f(_get(r, k), k.startswith("mc/") and not k.endswith("ppl")) if not k.startswith("robust")
+                  else ("–" if _get(r, k) is None else f"{_get(r, k):.0f}") for _, k in EXTRA]
+        print(f"| {Path(d).name} | {f(vb, False)} | " + " | ".join(cells) + " |")
+    print("Chance: LAMBADA ~0, HellaSwag/ARC/OBQA/SciQ 25, PIQA/WinoGrande 50, SIQA 33, BLiMP 50. Noise score: 100 = no loss.")
 
 
 def table(dirs):
@@ -440,13 +577,16 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("cmd", choices=["fetch", "run", "table"])
     ap.add_argument("runs", nargs="*")
-    ap.add_argument("--tasks", default="bpb,perturb,mc,chunks")
+    ap.add_argument("--tasks", default="bpb,perturb,mc,robust,chunks")
+    ap.add_argument("--standard", action="store_true", help="table: H-Net-paper zero-shot columns")
     ap.add_argument("--limit", type=int, default=0, help="examples per task (0 = all)")
     a = ap.parse_args()
     if a.cmd == "fetch":
         fetch()
     elif a.cmd == "run":
         run(a.runs, a.tasks.split(","), a.limit)
+    elif a.standard:
+        standard_table(a.runs)
     else:
         table(a.runs)
 
