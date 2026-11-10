@@ -195,7 +195,10 @@ class Scorer:
         self.lat = None
         if self.cfg.get("latent"):
             self.lat = latent_lib.build(self.cfg["latent"], self.model, self.mc)
-            self.lat.load_state_dict(ck["latent"])
+            # pre-ladder checkpoints predate two buffers (variance-floor estimate, REINFORCE baseline), unused at eval
+            missing, unexpected = self.lat.load_state_dict(ck["latent"], strict=False)
+            if unexpected or set(missing) - {"gamma_est", "rf_baseline"}:
+                raise RuntimeError(f"latent state mismatch: missing {missing}, unexpected {unexpected}")
         self.bpe = self.mc.get("tokenizer") == "gpt2"
         self.L = self.mc["seq_len"]
         if self.bpe:
