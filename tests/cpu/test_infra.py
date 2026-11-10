@@ -94,6 +94,28 @@ def test_early_kill(tmp_path, task_data):
     cleanup("cpu-ref", "cpu-kill")
 
 
+def test_manual_kill_file(tmp_path, task_data, monkeypatch):
+    """runs/<name>/KILL stops the run at its next eval like an early kill; a stale one from an earlier run doesn't."""
+    name = "cpu-mkill"
+    cleanup(name)
+    run = ROOT / "runs" / name
+    run.mkdir(parents=True)
+    (run / "KILL").write_text("stale")
+    orig = T.evaluate
+
+    def evaluate(*a, **kw):  # the monitor drops the file while the run is going
+        (run / "KILL").write_text("trunk info < 0 at 50%")
+        return orig(*a, **kw)
+
+    monkeypatch.setattr(T, "evaluate", evaluate)
+    with pytest.raises(SystemExit) as e:
+        T.main([str(write_cfg(tmp_path, name, LAT))])
+    assert e.value.code == 3
+    sm = json.load(open(run / "summary.json"))
+    assert sm["killed"] == "manual: trunk info < 0 at 50%"
+    cleanup(name)
+
+
 def test_eval_suite_and_latent_cot(tmp_path, task_data, monkeypatch):
     import eval_suite as E
     import latent_cot as C

@@ -8,6 +8,8 @@ final checkpoint + logs uploaded to HF repo a5ilank/hnet-latents under runs/<nam
 Early kill (train.kill_ref=<run> [train.kill_margin=0.03 train.kill_after=0.33]): at each eval after
 kill_after of training, if val BPB is worse than the reference run's val BPB at the same step by more than
 kill_margin, stop, write summary.json with killed=true and exit with code 3.
+Manual kill: create runs/<name>/KILL (its text = the reason); the run stops the same way at its next eval, so the
+ladder gate sees a killed run instead of waiting forever for a summary.
 """
 import copy
 import json
@@ -384,6 +386,7 @@ def main(argv):
     use_wandb = cfg.get("wandb", True) and rank == 0
     if rank == 0:
         run_dir.mkdir(parents=True, exist_ok=True)
+        (run_dir / "KILL").unlink(missing_ok=True)  # a leftover from an earlier run of this name must not kill this one
         yaml.safe_dump(cfg, open(run_dir / "config.yaml", "w"), sort_keys=False)
         print(json.dumps(cfg["derived"], indent=1), flush=True)
         mlog = open(run_dir / "metrics.jsonl", "w")
@@ -480,11 +483,18 @@ def main(argv):
             log(ev, step)
             if rank == 0:
                 print(f"[eval] step {step} " + " ".join(f"{k}={v:.5g}" for k, v in ev.items()), flush=True)
-            if tc.get("kill_ref") and step >= tc.get("kill_after", 0.33) * total_steps and step < total_steps - 1:
+            if step < total_steps - 1:
+                # early kill: worse than the reference run at the same step, or a runs/<name>/KILL file (a person or
+                # monitor judged the run hopeless; its text is the reason). Either way: summary with killed, exit 3.
                 flag = torch.zeros(1, device=DEV)
                 if rank == 0:
-                    ref = ref_bpb_at(tc["kill_ref"], step)
-                    if ref is not None and ev["val/bpb"] - ref > tc.get("kill_margin", 0.03):
+                    kf = run_dir / "KILL"
+                    ref = ref_bpb_at(tc["kill_ref"], step) if (tc.get("kill_ref") and
+                                                              step >= tc.get("kill_after", 0.33) * total_steps) else None
+                    if kf.exists():
+                        flag += 1
+                        killed = "manual: " + (kf.read_text().strip() or "KILL file")
+                    elif ref is not None and ev["val/bpb"] - ref > tc.get("kill_margin", 0.03):
                         flag += 1
                         killed = f"val bpb {ev['val/bpb']:.4f} vs {tc['kill_ref']} {ref:.4f} at step {step}"
                 all_reduce_(flag)
