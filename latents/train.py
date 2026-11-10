@@ -39,13 +39,18 @@ from latents import latent as latent_lib  # noqa: E402
 WANDB_ENTITY = os.environ.get("WANDB_ENTITY", "ahilan-uc-berkeley-electrical-engineering-computer-sciences")
 WANDB_PROJECT = os.environ.get("WANDB_PROJECT", "hnet-latents")
 HF_REPO = os.environ.get("HF_REPO", "a5ilank/hnet-latents")
-A100_BF16 = 312e12
+PEAK_BF16 = {"H100": 989e12, "A100": 312e12}  # dense bf16 peak per GPU, for the logged MFU
 LN2 = math.log(2)
 DEV = "cuda" if torch.cuda.is_available() else "cpu"
 WS_BYTES = (32, 9, 10, 13)
 
 
 # ----------------------------------------------------------------------------- distributed
+def peak_flops():
+    name = torch.cuda.get_device_name() if torch.cuda.is_available() else ""
+    return next((v for k, v in PEAK_BF16.items() if k in name), PEAK_BF16["A100"])
+
+
 def dist_info():
     if dist.is_available() and dist.is_initialized():
         return dist.get_rank(), dist.get_world_size()
@@ -458,7 +463,7 @@ def main(argv):
             d = {f"train/{k}": (v.item() if torch.is_tensor(v) else v) for k, v in stats.items()}
             d.update({"train/grad_norm": gn.item(), "lr": tc["lr"] * lr_scale, "lat_scale": lscale, "flops": cum_flops,
                       "bytes": cum_bytes, "perf/sec_per_step": dt, "perf/bytes_per_sec": bytes_per_step / dt,
-                      "perf/mfu": f_step * world / dt / (A100_BF16 * world)})
+                      "perf/mfu": f_step / dt / peak_flops()})
             if DEV.startswith("cuda"):
                 d["perf/max_mem_gb"] = torch.cuda.max_memory_allocated() / 2**30
             log(d, step)

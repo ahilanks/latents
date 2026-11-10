@@ -335,8 +335,8 @@ def block(rid):
 
 PHASES = {
     "phase1": ["# Phase 1: pure latent trunk with fixed boundaries (NEXT_STEPS.md). ~16 0.6B runs + 3 at 3B.",
-               *block("R0"), "gate R0", *block("R1"), *block("FLOOR"), "gate R1", *block("R2"), "gate R2",
-               *block("R3"), "gate R3", *block("R4"), "gate R4", *block("R5"), "gate R5", *block("FLOOR3B"),
+               *block("R0"), "gate R0", *block("R1"), *block("FLOOR"), "gate R1", *block("FLOOR3B"), *block("R2"),
+               "gate R2", *block("R3"), "gate R3", *block("R4"), "gate R4", *block("R5"), "gate R5",
                *block("R6"), "gate R6", "barrier", *block("M1"), "barrier", "gate M1"],
     "phase1_fallback": ["# Only if gate R6 failed: CPC negatives instead of the variance floor, then milestone 1 on R6b.",
                         *block("R6b"), "gate R6b", "barrier",
@@ -391,9 +391,8 @@ def write_jobs():
     PHASES["evals"] = [
         "# Eval suite on milestone checkpoints (and the old 3B references if their final.pt is downloaded to runs/).",
         "sh python scripts/eval_suite.py fetch",
-        "sh python scripts/eval_suite.py run runs/L-M1-s0 runs/L-FLOOR3B-s0",
-        "sh python scripts/eval_suite.py run runs/L-M2-s0",
-        "sh python scripts/eval_suite.py run runs/L-M3-s0",
+        *[f"python scripts/eval_suite.py run runs/{r}" for r in ("L-FLOOR3B-s0", "L-M1-s0", "L-M2-s0", "L-M3-s0")],
+        "barrier",
         "sh python scripts/eval_suite.py table runs/L-FLOOR3B-s0 runs/L-M1-s0 runs/L-M2-s0 runs/L-M3-s0"]
     for name, lines in PHASES.items():
         (d / f"{name}.txt").write_text("\n".join(lines) + "\n")

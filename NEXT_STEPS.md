@@ -10,7 +10,7 @@ Two losses stay because they constrain the model rather than carry information a
 
 ## Running it
 
-We run on one pod with **4× A100-80GB**, or 2× if that's all there is. The job runner uses whatever GPUs it sees.
+We run on one pod with **4× H100 80GB**. The job runner uses whatever GPUs it sees, so 2, 4 or 8 of any 80GB card work.
 
 ```bash
 bash setup.sh
@@ -18,7 +18,7 @@ python -m pytest tests/cpu -q                       # 34 CPU tests, ~30 s (kerne
 bash scripts/ladder/run_all.sh                      # preflight, phases 1-6, eval suite; stops at the first failed gate
 ```
 
-With 4 GPUs, give the side track its own GPU so it overlaps the ladder:
+On 4 GPUs, give the side track its own GPU so it overlaps the ladder:
 
 ```bash
 bash scripts/ladder/run_all.sh --gpus 0,1,2
@@ -47,12 +47,16 @@ Pieces:
 
 ### Compute plan
 
-| GPUs | Ladder + side track, GPUs busy | Cost at ~$1.85/GPU-h |
-|---|---|---|
-| 4× A100 | ~11 h | ~$85–95 |
-| 2× A100 | ~24 h | ~$90 |
+| Pod | $/hr | Ladder + side track | Cost |
+|---|---|---|---|
+| **4× H100 80GB (chosen)** | $16.36 | ~7–9 h | ~$115–150 |
+| 8× A100 80GB | $22.32 | ~8.5 h | ~$190 |
+| 4× A100 80GB | — | ~11 h | — |
 
-These assume the pod only runs while jobs run, so stop it while code or analysis is in progress. Everything is coded now, so a pod can run end to end without pausing. Failed rungs or fallbacks add 10–20%.
+Notes:
+- **Measured vs guessed.** The A100 numbers come from measured run times in `logistics.md`. The H100 numbers assume H100s are 1.3–1.6× faster on models this small, which is a guess. Check `perf/sec_per_step` in the first preflight and phase-1 runs.
+- **Assumptions.** Every gate passes, and the pod is stopped once the queue ends. Failed rungs or fallbacks add 10–20%.
+- **Avoid 40GB cards.** Micro-batches are sized for 80GB.
 
 ## How we climb
 
