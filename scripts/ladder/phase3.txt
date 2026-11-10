@@ -1,4 +1,6 @@
 # Phase 3: longer horizons. Soft gates: if a horizon fails, the longer ones are skipped.
+# hold: while logs/hold_P3 exists, wait here (benchmark the phase-2 milestones before going on).
+hold P3
 python -m latents.train configs/ladder/r10_rollout2.yaml name=L-R10-s0 train.seed=0 group=ladder-P3 train.kill_ref=$(python scripts/ladder.py name @P2 0) train.kill_margin=0.03
 python -m latents.train configs/ladder/r10_rollout2.yaml name=L-R10-s1 train.seed=1 group=ladder-P3 train.kill_ref=$(python scripts/ladder.py name @P2 1) train.kill_margin=0.03
 gate R10 soft

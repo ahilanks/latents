@@ -191,12 +191,14 @@ def main():
         if d["name"].startswith(("L-", "side-")):
             print("\n".join(direction(d["name"])))
     print("recent events:")
-    for d in [d for d in ev if d.get("event") in ("end", "gate", "select", "skip", "cancel", "sh_end")][-a.events:]:
+    for d in [d for d in ev if d.get("event") in ("end", "gate", "select", "skip", "cancel", "sh_end", "hold", "release")][-a.events:]:
         e = d["event"]
         if e == "end":
             s = f"{d['name']} {d['status']} (rc {d['rc']})" + (f": {d['tail'][-160:]}" if d.get("tail") else "")
         elif e in ("gate", "select"):
             s = f"{e} {d['id']} {'PASSED' if d['ok'] else 'FAILED'}: {' '.join(d.get('out', '').split())[-300:]}"
+        elif e in ("hold", "release"):
+            s = f"{e} {d['name']}" + (f" (remove {d['flag']} to continue)" if e == "hold" else "")
         elif e == "sh_end":
             s = f"sh rc={d['rc']}: {d['cmd'][:80]}"
         else:

@@ -234,3 +234,25 @@ def test_data_parallel_two_processes(tmp_path, task_data):
     sm = json.load(open(ROOT / "runs" / name / "summary.json"))
     assert sm["world"] == 2 and sm["val/bpb"] > 0
     cleanup(name)
+
+
+def test_hold_waits_for_flag(tmp_path, monkeypatch):
+    """`hold <name>` waits while logs/hold_<name> exists, then goes on; no file = no-op."""
+    import threading
+    import time
+    import run_jobs as Q
+    monkeypatch.setattr(Q, "ROOT", tmp_path)
+    monkeypatch.setattr(Q, "POLL", 0.05)
+    monkeypatch.setattr(Q, "notify", lambda *a: None)
+    (tmp_path / "logs").mkdir()
+    flag = tmp_path / "logs" / "hold_T"
+    flag.write_text("")
+    f = tmp_path / "jobs.txt"
+    f.write_text("hold T\nsh touch after_hold\nhold U\nsh touch after_u\n")
+    threading.Timer(0.4, flag.unlink).start()
+    t0 = time.time()
+    assert Q.Queue(f, [0]).run() == 0
+    assert time.time() - t0 >= 0.4
+    assert (tmp_path / "after_hold").exists() and (tmp_path / "after_u").exists()
+    ev = [json.loads(line)["event"] for line in open(tmp_path / "logs" / "queue_jobs.jsonl")]
+    assert ev.count("hold") == 1 and ev.count("release") == 1

@@ -18,6 +18,9 @@ Job file lines (blank lines and # comments ignored):
         wait until every launched job has finished and every pending gate has been decided.
   sh <command>
         run a shell command synchronously (put a barrier before it if it needs earlier results).
+  hold <name>
+        if logs/hold_<name> exists: let everything launched so far finish, notify, and wait until the file is
+        removed (e.g. to benchmark milestones before the next phase). No file: no-op.
 
 Logs: logs/<run>.log per job, logs/queue_<jobfile>.jsonl with one record per finished job / gate.
 Exit codes of jobs: 0 ok, 3 early-killed (latents.train kill_ref), 4 non-finite loss, other = crash.
@@ -85,6 +88,8 @@ def parse(path):
             items.append({"kind": word, "id": parts[1], "soft": "soft" in parts[2:], "line": i})
         elif word == "barrier":
             items.append({"kind": "barrier", "line": i})
+        elif word == "hold":
+            items.append({"kind": "hold", "name": line.split()[1], "line": i})
         elif word == "sh":
             items.append({"kind": "sh", "cmd": line[3:].strip(), "line": i})
         else:
@@ -221,6 +226,18 @@ class Queue:
                 while (self.running or self.pending) and not self.stopped:
                     self.tick()
                 self.skip_block = None
+            elif it["kind"] == "hold":
+                flag = ROOT / "logs" / f"hold_{it['name']}"
+                if flag.exists() and not self.dry:
+                    while (self.running or self.pending) and not self.stopped:
+                        self.tick()
+                    if self.stopped:
+                        break
+                    self.log(event="hold", name=it["name"], flag=str(flag.relative_to(ROOT)))
+                    notify(f"queue {self.path.stem} on hold", f"remove {flag.relative_to(ROOT)} to continue")
+                    while flag.exists():
+                        time.sleep(POLL)
+                    self.log(event="release", name=it["name"])
             elif it["kind"] == "sh":
                 self.log(event="sh", cmd=it["cmd"])
                 if not self.dry:
