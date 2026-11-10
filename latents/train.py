@@ -31,6 +31,8 @@ ROOT = Path(__file__).resolve().parents[1]
 # Early kill only late in training: on H100 the val BPB at ~45% swings by 0.05-0.07 between seeds and between
 # identical runs (R0: seed order flips between step 1000 and the end), so a 0.03 margin at 33% killed sound runs.
 KILL_AFTER = 0.8
+# ... and never on a gap smaller than ~2.5 sd of same-seed noise at that point (~0.02 at 87% of a 0.6B run).
+KILL_MARGIN_MIN = 0.05
 try:
     from dotenv import load_dotenv
     load_dotenv(ROOT / ".env")
@@ -497,7 +499,7 @@ def main(argv):
                     if kf.exists():
                         flag += 1
                         killed = "manual: " + (kf.read_text().strip() or "KILL file")
-                    elif ref is not None and ev["val/bpb"] - ref > tc.get("kill_margin", 0.03):
+                    elif ref is not None and ev["val/bpb"] - ref > max(tc.get("kill_margin", 0.03), KILL_MARGIN_MIN):
                         flag += 1
                         killed = f"val bpb {ev['val/bpb']:.4f} vs {tc['kill_ref']} {ref:.4f} at step {step}"
                 all_reduce_(flag)

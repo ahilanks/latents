@@ -244,3 +244,12 @@ gates and job files. ⚠️ R0 re-runs the hcD3 recipe first to confirm the refa
   Fixes:
   - Default `kill_after` is now 0.8 (`KILL_AFTER` in train.py), so only the late eval can kill.
   - R1-s1 is rerun (`logs/jobs/r1s1_rerun.txt`). Try 1's summary was set aside as `summary.killed_try1.json`, so gate R1 waits for the rerun instead of failing.
+- **23:20 run-to-run noise measured → gates widened (user decision).** `L-R0rep-s0`, an identical rerun of R0-s0, ended at **1.2733** vs 1.2872. It had been 1.5282 vs 1.5909 at step 1000 and 1.3203 vs 1.3352 at step 2000.
+  - The val eval is deterministic, so this is training-trajectory noise: GPU non-determinism amplified by the router and latent-loss dynamics.
+  - So the R0 gate failure (+0.016) was within noise, and the 0.01 / 0.0 neutral-rung tolerances were coin flips.
+  - Changes:
+    - Neutral rungs now pass at Δ ≤ +0.03 (`TOL`) and tf/copy ≤ 1.10× (`RATIO_TOL`). R4 (a costly change) passes at Δ ≤ +0.05.
+    - Early kills need a gap of ≥ 0.05 (`KILL_MARGIN_MIN`) after 80% of training.
+    - Signal checks are unchanged: trunk info > 0.01 vs the floor, and beats copy.
+  - R1-s0 try 1 had been killed at step 2000 (+0.036 vs R0-s0). It is being rerun to completion with no early kill (`logs/jobs/r1s0_rerun.txt`), so gate R1 decides on final values.
+- **23:22 the 10B side pair OOMed at launch** (`side-f10-*`: 4 jobs on a GPU). They are requeued with the new guard (`RUN_JOBS_MAX_PER_GPU=1 RUN_JOBS_MIN_FREE_GB=30`).

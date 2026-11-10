@@ -75,9 +75,10 @@ Pieces:
   - a 4-step training run, and a strict checkpoint reload
 
   That takes about 10 minutes on 4 GPUs and catches crashes before they cost hours.
-- **Early kill** (`train.kill_ref`):
-  - neutral rungs are killed if, after a third of training, they are 0.03 BPB worse than the rung below at the same step
-  - rungs that remove a signal are killed if they fall 0.01 below the floor control
+- **Early kill** (`train.kill_ref`), only after 80% of training and never on a gap under 0.05 BPB (run-to-run noise, see below):
+  - neutral rungs are killed if they are that much worse than the rung below at the same step
+  - rungs that remove a signal are killed if they fall that far below the floor control
+  - a run judged hopeless can also be stopped by hand: write the reason to `runs/<name>/KILL`
 
 ### Compute plan
 
@@ -97,7 +98,10 @@ Notes:
 
 - **One change per rung.** Each rung is compared to the rung right before it.
 - **0.6B bytes, 2 seeds, compared paired by seed.** Runs take ~15 min. Latent runs at 0.6B differ by up to ~0.025 BPB between seeds, but recipe rankings have held across seeds.
-- **A neutral change** (expected to cost nothing) passes if the paired Δ is at most +0.01 BPB and the latent metrics don't get worse.
+- **A neutral change** (expected to cost nothing) passes if the paired Δ is at most +0.03 BPB (`TOL` in `scripts/ladder.py`) and the latent-vs-copy ratio is at most 1.10× the rung below.
+  - **Why 0.03 and not 0.01:** on the H100s, identical same-seed reruns end ~0.015 BPB apart (R0-s0 1.2872 vs 1.2733) and same-seed runs spread ~0.02. So a paired 2-seed Δ has an sd of ~0.02, and a 0.01 tolerance was a coin flip.
+  - Mid-training gaps are much noisier: ~0.06 at 45% of a run.
+  - If a decisive rung (R6, the phase winners, the milestones) lands within ~0.02 of its threshold, add a third seed.
 - **A costly change** (one that removes a signal) passes if the trunk still carries information (trunk info stays above 0.01) and the latent still beats the copy baseline. Log the cost.
 - **If a rung fails,** try the alternative listed for it before moving up. Never stack a second change on a failing rung.
 - **Milestones** get confirmed at 3B bytes.

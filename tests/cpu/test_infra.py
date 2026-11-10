@@ -157,8 +157,10 @@ def test_ladder_checks_and_select(tmp_path, monkeypatch):
     put("R1", 0, **{"val/bpb": 1.274, "val/lat/ratio_tf_copy": 0.6})
     assert Lm.check("R1")[0] is None  # seed 1 not finished
     put("R1", 1, **{"val/bpb": 1.330, "val/lat/ratio_tf_copy": 0.6})
+    assert Lm.check("R1")[0] is True  # mean delta +0.017 <= TOL (0.03): within run-to-run noise
+    put("R1", 1, **{"val/bpb": 1.380, "val/lat/ratio_tf_copy": 0.6})
     ok, msg = Lm.check("R1")
-    assert ok is False and "FAIL" in msg
+    assert ok is False and "FAIL" in msg  # mean delta +0.042 > TOL
     put("R1", 1, **{"val/bpb": 1.300, "val/lat/ratio_tf_copy": 0.6, "killed": "x"})
     assert Lm.check("R1")[0] is False
     for rid, b in (("R6", 1.40), ("R7", 1.39), ("R8", 1.37), ("R9", 1.45)):
