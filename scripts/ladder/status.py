@@ -172,7 +172,7 @@ def main():
     print(time.strftime("%Y-%m-%d %H:%M:%S"))
     gpu_samples()
     procs = subprocess.run(["pgrep", "-af", "run_jobs.py"], capture_output=True, text=True).stdout
-    qs = sorted({m.group(1) for m in re.finditer(r"scripts/ladder/(\w+)\.txt", procs)})
+    qs = sorted({m.group(1) for m in re.finditer(r"run_jobs\.py \S*?([\w.-]+)\.txt", procs)})
     print("active queue:", ", ".join(qs) if qs else "NONE (queue not running)")
     ev = queue_events()
     live = {}  # replay in time order: a run restarted after an earlier end/cancel is running again
