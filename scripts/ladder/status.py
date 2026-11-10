@@ -7,6 +7,7 @@ val BPB and how long ago its log was written (a stale log means a hung job), the
 and any tracebacks. Reads only nvidia-smi and logs/; needs no GPU libraries.
 """
 import argparse
+import sys
 import json
 import re
 import subprocess
@@ -15,6 +16,76 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 LOGS = ROOT / "logs"
+sys.path.insert(0, str(ROOT / "scripts"))
+import ladder as Lm  # noqa: E402  (rung specs: references, kill rules)
+
+# latent metrics worth watching when present (lower ratio_tf_copy = the predictor beats copying the last chunk)
+WATCH = ("val/lat/ratio_tf_copy", "val/L2/ratio_tf_copy", "val/compression_L1/L0", "val/lat/tgt_within_frac",
+         "val/lat/tgt_eff_rank", "val/edge_prec")
+
+
+def evals(name):
+    """{step: eval record} from runs/<name>/metrics.jsonl (records that carry val/bpb)."""
+    p = ROOT / "runs" / name / "metrics.jsonl"
+    out = {}
+    if p.exists():
+        for line in p.read_text(errors="replace").splitlines():
+            try:
+                r = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if "val/bpb" in r and "step" in r:
+                out[r["step"]] = r
+    return out
+
+
+def refs_of(name):
+    """[(label, run name)] to compare a running ladder run with at equal steps."""
+    if name.startswith("side-f10-latent"):  # side track: does the latent loss still help at 10B bytes?
+        return [("no-latent control", name.replace("latent", "plain"))]
+    m = re.match(r"^L-(\w+?)-s(\d+)$", name)
+    if not m or m.group(1) not in Lm.RUNGS:
+        return []
+    rid, seed = m.group(1), int(m.group(2))
+    spec, out = Lm.RUNGS[rid], []
+    for label, r in (("ref", spec.get("ref")), ("kill-ref", (spec.get("kill") or (None,))[0])):
+        if r:
+            try:
+                out.append((label, Lm.run_name(Lm.resolve(r), seed)))
+            except KeyError:
+                pass
+    floor = "FLOOR3B" if rid.startswith("M") else "FLOOR"
+    if spec.get("phase") == 1 and rid not in ("R0", "R1", "FLOOR", "FLOOR3B"):
+        out.append(("floor", Lm.run_name(floor, 0 if floor == "FLOOR3B" else seed)))
+    seen, uniq = set(), []
+    for label, r in out:
+        if r not in seen and r != name:
+            seen.add(r)
+            uniq.append((label, r))
+    return uniq
+
+
+def direction(name, n=3):
+    """Lines describing where a running run is heading: its last evals and the gap to each reference at equal steps."""
+    ev = evals(name)
+    if not ev:
+        return ["      no eval yet"]
+    steps = sorted(ev)[-n:]
+    lines = ["      val bpb: " + ", ".join(f"{ev[s]['val/bpb']:.4f}@{s}" for s in steps)
+             + "  " + " ".join(f"{k.split('/', 1)[1]}={ev[steps[-1]][k]:.3g}" for k in WATCH if k in ev[steps[-1]])]
+    for label, r in refs_of(name):
+        rev = evals(r)
+        common = [s for s in steps if s in rev]
+        if not common:
+            lines.append(f"      vs {label} {r}: no eval at the same steps yet")
+            continue
+        gaps = ", ".join(f"{ev[s]['val/bpb'] - rev[s]['val/bpb']:+.4f}@{s}" for s in common)
+        extra = ""
+        k = "val/lat/ratio_tf_copy"
+        if k in ev[common[-1]] and k in rev[common[-1]]:
+            extra = f"  (tf/copy {ev[common[-1]][k]:.3f} vs {rev[common[-1]][k]:.3f})"
+        lines.append(f"      Δbpb vs {label} {r}: {gaps}{extra}")
+    return lines
 
 
 def gpu_samples(n=5, dt=1.0):
@@ -117,13 +188,15 @@ def main():
     for d in running:
         print(f"  [{d['queue']}] {d['name']} on GPU {','.join(map(str, d['gpus']))} since {d['time'][11:]}: "
               f"{job_status(d['name'])}")
+        if d["name"].startswith(("L-", "side-")):
+            print("\n".join(direction(d["name"])))
     print("recent events:")
     for d in [d for d in ev if d.get("event") in ("end", "gate", "select", "skip", "cancel", "sh_end")][-a.events:]:
         e = d["event"]
         if e == "end":
             s = f"{d['name']} {d['status']} (rc {d['rc']})" + (f": {d['tail'][-160:]}" if d.get("tail") else "")
         elif e in ("gate", "select"):
-            s = f"{e} {d['id']} {'PASSED' if d['ok'] else 'FAILED'}"
+            s = f"{e} {d['id']} {'PASSED' if d['ok'] else 'FAILED'}: {' '.join(d.get('out', '').split())[-300:]}"
         elif e == "sh_end":
             s = f"sh rc={d['rc']}: {d['cmd'][:80]}"
         else:
