@@ -234,11 +234,27 @@ RUNGS = {
     "R19": dict(phase=5, cfg="r19_compute_penalty", ref="R18", kill=("R18", 0.03), desc="learned depth via a compute penalty",
                 checks=[delta_le("R18", TOL), flops_le("R18", 1.05)]),
 }
-# R8: better than R7 on readout BPB, or on edge precision at no BPB cost
-RUNGS["R8"]["checks"] = [near("val/compression_L1/L0", 0.25, 0.25),
-                         any_of(delta_le("R7", TOL), ge_frac("R7", 1.05, "val/edge_prec"))]
-RUNGS["R9"]["checks"] = [near("val/compression_L1/L0", 0.25, 0.25),
-                         any_of(delta_le("R7", TOL), ge_frac("R7", 1.05, "val/edge_prec"))]
+def alive(rid):
+    """Every seed of the rung finished and none was killed."""
+    sms = [summary(rid, s) for s in RUNGS.get(rid, {}).get("seeds", SEEDS)]
+    return all(sm is not None and not sm.get("killed") for sm in sms)
+
+
+def ref_alive(primary, fallback, make):
+    """Check against `primary` while it is a usable reference, else against `fallback` (e.g. R7 was killed -> R6)."""
+    def f(rid):
+        ref = primary if alive(primary) else fallback
+        ok, msg = make(ref)(rid)
+        return ok, msg + ("" if ref == primary else f" [{primary} killed -> vs {fallback}]")
+    return f
+
+
+# R8 / R9: better than R7 on readout BPB, or on edge precision at no BPB cost. Every phase-2 rung replaces R6's
+# fixed chunks, so if R7 itself was killed the comparison falls back to R6.
+for _rid in ("R8", "R9"):
+    RUNGS[_rid]["checks"] = [near("val/compression_L1/L0", 0.25, 0.25),
+                             any_of(ref_alive("R7", "R6", lambda r: delta_le(r, TOL)),
+                                    ref_alive("R7", "R6", lambda r: ge_frac(r, 1.05, "val/edge_prec")))]
 
 SELECT = {
     # phase winner: candidates in preference order; "min" = lowest mean val BPB among passing

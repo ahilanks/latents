@@ -172,6 +172,14 @@ def test_ladder_checks_and_select(tmp_path, monkeypatch):
     # P3 falls back to the P2 winner when no rollout rung passed
     assert Lm.select("P3") == "R8"
     assert "p2_best.yaml" in (tmp_path / "configs" / "ladder" / "p3_best.yaml").read_text()
+    # R7 killed: R8 / R9 are judged against R6 instead (R9 at +0.02 vs R6 passes, R8 at +0.12 does not)
+    for s in (0, 1):
+        put("R7", s, **{"val/bpb": 1.50, "val/compression_L1/L0": 0.25, "val/edge_prec": 0.5, "killed": "x"})
+        put("R8", s, **{"val/bpb": 1.52, "val/compression_L1/L0": 0.25, "val/edge_prec": 0.4})
+        put("R9", s, **{"val/bpb": 1.42, "val/compression_L1/L0": 0.25, "val/edge_prec": 0.3})
+    assert Lm.check("R9")[0] is True and "R7 killed" in Lm.check("R9")[1]
+    assert Lm.check("R8")[0] is False
+    assert Lm.select("P2") == "R9"
 
 
 def test_job_files_parse_and_dry_run(tmp_path, monkeypatch):
