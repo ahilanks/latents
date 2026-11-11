@@ -358,3 +358,56 @@ gates and job files. ⚠️ R0 re-runs the hcD3 recipe first to confirm the refa
   - **Reading works:** with true reasoning latents and no reasoning bytes, 34% (vs 3%), flat across chain lengths, from a decoder that never shapes the latents. This is the first positive result on latent reasoning.
   - **Producing fails:** own thoughts ≈ chance. The thought L1 rises from 0.78 (teacher-forced) to 1.05 (own), so errors compound over ~16 thoughts of 4 bytes each. T-full also lost most of its reading (5%), because training late on uninformative own thoughts teaches the decoder to ignore them again.
   - **Next step:** first measure where own-thought rollouts break (error by thought index). Then try one thought per reasoning *step* ("b=42"): 2–8 thoughts instead of ~16, which is the temporal-abstraction idea. Keep some true-latent inputs (p_true > 0) to retain reading.
+- **12:15 (2026-11-11) Why teacher-forced latent thoughts were stuck at 34%, and what fixed it (batch 1).**
+  - **Setup.** M1 (latent-only), thoughts = the TRUE reasoning-chunk latents (teacher mode), answer decoded from latents only. Evaluated on all 2000 test problems.
+  - **Training rules (user):**
+    - non-contrastive objectives only
+    - nothing hard-coded
+    - always end-to-end, nothing frozen
+    - the decoder gets its own loss, but its gradient never reaches the latents, encoder or trunk
+    - teacher-forced on real encodings only
+  - **New names:** hnet-cot = C-B1, latent-cot = C-L1, m1-cot = T-base, think-96k = T-read, think-1.6M = T-read2.
+  - **Diagnostics added:**
+    - `scripts/think_diag.py`: the decoder reads predicted / true / zero latents, with the answer fed in byte by byte.
+    - `scripts/think_probe.py`: an MLP probe for the next answer byte from the true latent, the main-net output `z`, or the predicted latent.
+    - `scripts/think_probe_value.py` and `scripts/think_geometry.py`.
+
+  | run (all from think-96k unless noted; 1500 steps × 256) | acc | by steps 2–8 | decoder reads pred / true | probe true / z / pred |
+  |---|---|---|---|---|
+  | hnet-cot, written CoT (reference) | **94.6** | 100 100 100 100 100 93 71 | | |
+  | latent-cot, written CoT | 75.9 | 100 98 96 95 97 44 1 | | |
+  | m1-cot, written CoT | 72.8 | 100 100 100 100 99 9 1 | | |
+  | think-96k (T-read) | 33.8 | 38 30 36 35 32 34 32 | 33 / 46 (n=200) | 99 / 35 / 31 |
+  | think-1.6M (T-read, 1.6M problems total) | 50.5 | 63 54 52 48 53 44 39 | | |
+  | think-dectrue (+ decoder also on true latents) | 51.8 | 54 58 53 52 48 47 50 | 52 / 81 | 86 / 41 / 38 |
+  | think-dectrue-long (+3000 steps) | 41.2 | 48 42 43 42 45 36 33 | 41 / 80 | 19 / 17 / 5 |
+  | think-l2 (L2 latent loss) | 38.4 | 38 37 41 37 37 40 38 | 38 / 68 | 78 / 31 / 25 |
+  | **think-nopad** (padding fix + dec_true) | **70.2** | 71 76 77 65 66 68 67 | 70 / **99** | 98 / 60 / 53 |
+  | think-ema999 (+ EMA tau 0.999) | 70.5 | 69 77 77 68 70 69 65 | 71 / 99 | 98 / 58 / 52 |
+  | think-gamma5 (+ answer-latent loss ×5) | 66.3 | 70 73 73 62 62 65 60 | 67 / 97 | 94 / 53 / 46 |
+  | **think-tgrad** (+ thought loss trains the encoder through the thought inputs) | **76.6** | 82 81 79 72 78 70 75 | 77 / 99 | 99 / 67 / 63 |
+
+  - **Issue 1: the decoder never trained on real encodings.**
+    - It only ever read the trunk's predictions, so it decoded true latents at 45% while a probe reads 98.7% from them.
+    - Fix: `--dec_true` adds a decoder-only CE that reads the true next-chunk latents (target encoder, detached). 34% → 52%.
+  - **Issue 2, the big one: padding counted in the latent losses.**
+    - `think.py` pads each problem's row to the batch maximum. The byte losses masked that padding; the latent losses did not.
+    - Real chunks were only 13% of the answer-latent loss terms and 54% of the full-document latent loss.
+    - Fix: a `chunk_valid` mask (commit 6923bbd). A test shows every loss is identical with 0 or 128 extra padding bytes.
+    - Results: decoder on true latents 81% → **99%**, on predicted latents 52% → 70%; accuracy 52% → **70%**. The encoder no longer drops digits (true-latent probe 86% → 98%).
+    - With the bug, more training *hurt*: think-dectrue-long's true-latent probe fell to 19% and its accuracy to 41%. The encoder drifted to drop the hard-to-predict digits, and padding diluted the answer signal about 7×. That explains the think-1.6M plateau at about 47–50%.
+  - **Issue 3: the predicted latent didn't carry the answer.**
+    - Fix: `--thought_grad`. The teacher thought inputs keep their gradient, so the thought and answer latent losses also train the encoder through them. This is an end-to-end, missing-gradient fix.
+    - Probes: `z` 60 → 67%, predicted latent 53 → 63%. Accuracy **76.6%** (82% at 2 steps), against 94.6% for written CoT.
+    - The remaining errors are almost all in the units digit: the tens digit is 99.7%, the units digit 79%.
+  - **No help:**
+    - L2 instead of L1 (38%): the encoder drops more digit content (true-latent probe 78% vs 86%). Gradients were checked end to end: L2 reaches embeddings, encoder, main net and head at about 2.3× L1's norm, and the decoder's gradients are identical under both. An L2-from-scratch comparison is running.
+    - Answer loss ×5 (66%).
+    - Slower EMA target (70.5%, same as the baseline).
+    - Contrastive InfoNCE: dropped by rule. Batch InfoNCE was also trivially solved at 99% by the context fingerprint.
+    - Freezing the encoder: dropped by rule (end-to-end).
+    - Distribution regularizers: dropped. It isn't collapse: RankMe 227 on FineWeb, and the task's low rank (about 26) just reflects the narrow data.
+  - **Next:**
+    - Combine thought_grad with the padding fix and train longer.
+    - The units digit: the main net's `z` still holds only 67%.
+    - Then own-thought rollouts at inference. Hierarchy comes later, via nesting.
