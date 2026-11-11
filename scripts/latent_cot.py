@@ -41,8 +41,11 @@ class Model:
         self.m = build_model(self.mc, device=device)
         self.m.load_state_dict(ck["model"])
         self.m.eval()
-        self.lat = latent_lib.build(self.cfg["latent"], self.m, self.mc)
-        self.lat.load_state_dict(ck["latent"])
+        self.lat = None  # models without a latent loss can still answer directly and with byte CoT
+        if self.cfg.get("latent"):
+            self.lat = latent_lib.build(self.cfg["latent"], self.m, self.mc)
+            missing, unexpected = self.lat.load_state_dict(ck["latent"], strict=False)
+            assert not unexpected and set(missing) <= {"gamma_est", "rf_baseline"}, (missing, unexpected)
         self.ac = dict(device_type="cuda" if device.startswith("cuda") else "cpu", dtype=torch.bfloat16,
                        enabled=device.startswith("cuda"))
 
@@ -55,7 +58,7 @@ class Model:
         if mc.get("pool_k"):
             return fixed_routing(1, x.shape[1], mc["pool_k"], x.device)
         if getattr(self.m, "surprise", None) is not None:
-            tgt = self.lat.ema_states(self.m, x) if self.lat.target == "ema" else None
+            tgt = self.lat.ema_states(self.m, x) if (self.lat is not None and self.lat.target == "ema") else None
             return self.m.surprise(h, cu, tgt)
         return bb.routing_module(h, cu_seqlens=cu)
 
@@ -114,7 +117,7 @@ class Model:
             seq = torch.cat((self.pad(hc[:q]), self.pad(th.to(hc.dtype)), self.pad(hc[q:])), 0)
             z = self.main(seq)
             z = torch.cat((z[:q], z[q + th.shape[0]:]), 0)
-            src = self.lat.head(z).to(hc.dtype) if self.lat.decode_from_pred else z[..., : hc.shape[-1]]
+            src = self.lat.head(z).to(hc.dtype) if (self.lat is not None and self.lat.decode_from_pred) else z[..., : hc.shape[-1]]
             out = bb.dechunk_layer(src, bp.boundary_mask, bp.boundary_prob, cu1)
             hd = bb.residual_func(out.to(residual.dtype), residual, bp.selected_probs).to(out.dtype)
             if getattr(self.m, "dec_emb", None) is not None:
@@ -183,8 +186,8 @@ def evaluate(run, ks, n, n_cot):
     res = {"model": Path(run).name, "per_byte_mflop": outer / 1e6, "per_chunk_mflop": inner / 1e6, "modes": {}}
     by = lambda rows: {s: sum(r for st, r in rows if st == s) / max(1, sum(1 for st, _ in rows if st == s))  # noqa: E731
                        for s in sorted({st for st, _ in rows})}
-    # latent CoT for every k (k=0 is the direct answer)
-    for k in ks:
+    # latent CoT for every k (k=0 is the direct answer); a model without a latent head only answers directly
+    for k in (ks if M.lat is not None else ["0"]):
         rows, ksz = [], []
         for p in probs:
             qb = bytes([BOS]) + p["q"].encode()

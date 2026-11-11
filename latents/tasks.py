@@ -9,7 +9,8 @@ A problem is a chain of variable updates mod 100; the chain of thought writes ou
 Training documents = Q + CoT + answer (byte stream, documents separated by byte 254 like FineWeb-Edu), so the
 latent model learns to predict the chunk latents of the chain of thought. The test file keeps the parts apart.
 
-usage: python -m latents.tasks --out data/task_arith [--train_bytes 2e8]
+usage: python -m latents.tasks --out data/task_arith [--train_bytes 2e8] [--no_cot]
+--no_cot writes Q + answer documents (no chain of thought) with the same test problems, for a direct-answer baseline.
 """
 import argparse
 import json
@@ -39,18 +40,23 @@ def problem(rng, steps):
                 value=v, steps=steps)
 
 
-def document(p):
-    return (p["q"] + p["cot"] + p["answer"]).encode()
+def document(p, cot=True):
+    return (p["q"] + (p["cot"] if cot else "") + p["answer"]).encode()
 
 
-def write(out, train_bytes=2e8, val_bytes=2e6, n_test=2000, train_steps=(2, 6), test_steps=(2, 8), seed=0):
+def sample(rng, steps=(2, 6)):
+    """One training problem (for trainers that need the parts apart, e.g. scripts/think_train.py)."""
+    return problem(rng, rng.randint(*steps))
+
+
+def write(out, train_bytes=2e8, val_bytes=2e6, n_test=2000, train_steps=(2, 6), test_steps=(2, 8), seed=0, cot=True):
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
     rng = random.Random(seed)
     for split, nbytes in (("train", train_bytes), ("val", val_bytes)):
         buf, n = [], 0
         while n < nbytes:
-            d = bytes([SEP]) + document(problem(rng, rng.randint(*train_steps)))
+            d = bytes([SEP]) + document(problem(rng, rng.randint(*train_steps)), cot)
             buf.append(d)
             n += len(d)
         np.frombuffer(b"".join(buf), dtype=np.uint8).tofile(out / f"{split}.u8")
@@ -66,8 +72,9 @@ def main():
     ap.add_argument("--out", default="data/task_arith")
     ap.add_argument("--train_bytes", type=float, default=2e8)
     ap.add_argument("--n_test", type=int, default=2000)
+    ap.add_argument("--no_cot", action="store_true")
     a = ap.parse_args()
-    write(a.out, a.train_bytes, n_test=a.n_test)
+    write(a.out, a.train_bytes, n_test=a.n_test, cot=not a.no_cot)
 
 
 if __name__ == "__main__":
