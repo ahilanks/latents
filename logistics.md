@@ -338,3 +338,8 @@ gates and job files. ⚠️ R0 re-runs the hcD3 recipe first to confirm the refa
     2. Then scheduled sampling from true to predicted thoughts.
     3. And/or make each thought decodable to its chunk's bytes, so it must carry the value.
     4. Fewer, more abstract thoughts (one per reasoning step).
+- **07:55 Why L1 fails long chains: it stops writing early, it does not compute wrong.**
+  - On 40 eight-step problems, B1 is right 30/40 and writes 16.5 of the 17 '=' signs; L1 is right 1/40 and writes 14.5.
+  - Example: L1 writes 7 steps, then `#### <7th value>`. Within training lengths (2–6) both are 95–100%.
+  - Hypothesis (one fine-tune per model): the latent loss sharpens prediction of the chunk where `####` begins, so a training-length prior on chain length takes over.
+  - **Why the joint model is the wrong base for thoughts:** its decoder reads the main-net output, not the predicted latent. The latent-only models (R2+, M1/M2) decode *from* predicted latents, so the thought → text path is pretrained. Use them for the next attempt.
