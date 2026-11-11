@@ -343,3 +343,18 @@ gates and job files. ⚠️ R0 re-runs the hcD3 recipe first to confirm the refa
   - Example: L1 writes 7 steps, then `#### <7th value>`. Within training lengths (2–6) both are 95–100%.
   - Hypothesis (one fine-tune per model): the latent loss sharpens prediction of the chunk where `####` begins, so a training-length prior on chain length takes over.
   - **Why the joint model is the wrong base for thoughts:** its decoder reads the main-net output, not the predicted latent. The latent-only models (R2+, M1/M2) decode *from* predicted latents, so the thought → text path is pretrained. Use them for the next attempt.
+- **08:57 Latent thoughts on the latent-only model M1, pure loss** (`loss_pure`). The decoder is trained on stop-gradient latents and never shapes the thoughts; thoughts learn only from latent targets; every step also trains on the full written examples.
+
+  | run | eval | acc | by steps 2–8 |
+  |---|---|---|---|
+  | T-base (M1 + written reasoning) | byte CoT | 74.3% | 100 100 100 100 98 19 2 (stops early) |
+  | T-base | true latents | 0.5% | |
+  | **T-read** (thought inputs always the true latents) | **true latents** | **34.0%** | 42 29 33 34 37 28 35 |
+  | T-read | own thoughts (4 / 16 / oracle 15.6) | 1.5 / 3.0 / 4.3% | |
+  | T-full (true → own over 60%) | own thoughts, oracle | 4.3% | |
+  | T-full | true latents | 5.2% | |
+  | any | no thoughts | ~3% | |
+
+  - **Reading works:** with true reasoning latents and no reasoning bytes, 34% (vs 3%), flat across chain lengths, from a decoder that never shapes the latents. This is the first positive result on latent reasoning.
+  - **Producing fails:** own thoughts ≈ chance. The thought L1 rises from 0.78 (teacher-forced) to 1.05 (own), so errors compound over ~16 thoughts of 4 bytes each. T-full also lost most of its reading (5%), because training late on uninformative own thoughts teaches the decoder to ignore them again.
+  - **Next step:** first measure where own-thought rollouts break (error by thought index). Then try one thought per reasoning *step* ("b=42"): 2–8 thoughts instead of ~16, which is the temporal-abstraction idea. Keep some true-latent inputs (p_true > 0) to retain reading.
