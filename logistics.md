@@ -281,3 +281,15 @@ gates and job files. ⚠️ R0 re-runs the hcD3 recipe first to confirm the refa
   - To settle it: an H100 no-latent seed 0, and the compute-matched control (`side-f3-plain-3p2B-s0-r2`).
 - **01:31 gate R6 passed (go/no-go):** the fully latent-only trunk (no byte gradient into encoder, router or main net) keeps trunk info 0.057 (R5: ~0.12), tf/copy 0.59, and no collapse (within 0.994, eff. rank 227). M1 (R6 @3B) is running.
 - **02:57 ✅ Phase 1 complete: gate M1 passed.** R6 at 3B (fully latent-only trunk: no byte gradient into encoder, router or main net). Readout 1.2989 / 1.2900 vs FLOOR3B 1.4092 → **trunk info 0.115**; it was 0.057 at 0.6B, so it grows with data. tf/copy 0.547. Phase 2 (routers R7–R9) starts. The queue's `L-R1-s*:3` entries are the first-try kills; the reruns passed.
+- **03:18 3B latent vs no-latent, corrected with two more controls (H100, same code):**
+
+  | 3B, val BPB | run(s) | mean |
+  |---|---|---|
+  | latent | 1.1057 (s0, A100) · 1.1081 (s1, A100) · 1.1088 (s1, H100) | 1.1075 |
+  | no-latent | 1.1341 (s0, H100; A100 was 1.1361) · 1.1169 (s1) · 1.1246 (s1, compute-matched: 3.32B bytes, 2.67e17 FLOPs) | 1.1252 |
+
+  - **The latent gain at 3B is ≈ −0.017 (~1.5%).** Compute-matched on seed 1 it is −0.016.
+  - The 01:41 note ("no clear compute-adjusted gain; 1.1361 probably a bad run") was wrong. The H100 rerun reproduces 1.1361, and no-latent 3B runs simply spread ~0.009 sd.
+  - **The latent runs spread only ~0.002:** the latent loss also makes training much more reproducible.
+  - The gain shrinks with data (−0.069 at 0.6B) but is not gone. The 10B pair will tell whether it keeps shrinking.
+- **03:13–03:17 R7 (identity router) killed on both seeds at step 2000:** +0.10 vs R6 (~5× noise). Boundaries were on target (0.25) and word-like (edge prec 0.55–0.70), yet worse than fixed chunks under latent-only training. Phase 2 continues with R8 and R9.
