@@ -43,6 +43,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 POLL = 10
+RESERVE_S = 120  # a guarded launch counts as a process on its GPU until nvidia-smi can see it
 
 
 def notify(title, msg):
@@ -146,19 +147,34 @@ class Queue:
         return min(int(spec), n)
 
     def room(self, n):
-        """Opt-in guard: are there n free GPUs (of ours) with few enough jobs and enough memory? Prefers the emptiest."""
+        """Opt-in guard: are there n free GPUs (of ours) with few enough jobs and enough memory? Prefers the emptiest.
+        A new job only shows up in nvidia-smi after its CUDA init (10-30 s), so guarded launches also leave a
+        reservation (logs/.gpu_reservations, under a lock) that other guarded queues count for RESERVE_S seconds."""
         if self.dry or (self.max_per_gpu is None and not self.min_free_gb):
             return True
-        load = gpu_load()
-        if not load:
+        import fcntl
+        lock = open(ROOT / "logs" / ".gpu_guard.lock", "w")
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            load = gpu_load()
+            if not load:
+                return True
+            rf = ROOT / "logs" / ".gpu_reservations"
+            now = time.time()
+            res = [(int(g), float(t)) for g, t in (line.split() for line in (rf.read_text().splitlines() if rf.exists() else []))
+                   if now - float(t) < RESERVE_S]
+            count = {g: c + sum(1 for r, _ in res if r == g) for g, (c, _) in load.items()}
+            ok = [g for g in self.free if g in load and (self.max_per_gpu is None or count[g] <= self.max_per_gpu)
+                  and load[g][1] >= self.min_free_gb]
+            if len(ok) < n:
+                return False
+            ok.sort(key=lambda g: (count[g], -load[g][1]))
+            self.free = ok[:n] + [g for g in self.free if g not in ok[:n]]
+            rf.write_text("".join(f"{g} {t}\n" for g, t in res + [(g, now) for g in ok[:n]]))
             return True
-        ok = [g for g in self.free if g in load and (self.max_per_gpu is None or load[g][0] <= self.max_per_gpu)
-              and load[g][1] >= self.min_free_gb]
-        if len(ok) < n:
-            return False
-        ok.sort(key=lambda g: (load[g][0], -load[g][1]))
-        self.free = ok[:n] + [g for g in self.free if g not in ok[:n]]
-        return True
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
+            lock.close()
 
     def launch(self, it):
         n = self.n_gpus(it["gpus"])

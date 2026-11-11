@@ -278,3 +278,8 @@ def test_gpu_guard_waits_for_room(tmp_path, monkeypatch):
     assert len(calls) >= 3
     ev = [json.loads(line) for line in open(tmp_path / "logs" / "queue_jobs.jsonl")]
     assert ev[0]["event"] == "start" and ev[0]["gpus"] == [0]
+    # the launch left a reservation on GPU 0: another guarded queue now sees 2 processes there and must not stack
+    q2 = Q.Queue(f, [0])
+    assert q2.room(1) is False
+    monkeypatch.setattr(Q, "RESERVE_S", 0)
+    assert q2.room(1) is True

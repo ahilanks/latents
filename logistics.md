@@ -258,3 +258,8 @@ gates and job files. ⚠️ R0 re-runs the hcD3 recipe first to confirm the refa
   - The old no-latent control (seed 0, A100) was 1.1361. The joint-latent 3B runs (A100) are 1.1057 / 1.1081.
   - Paired by seed 1, the latent gain is only −0.009, vs −0.030 on seed 0. The no-latent seeds differ by 0.019, unlike the latent seeds (0.0024), but hardware and code also differ.
   - A clean H100 pair is queued: `side-f3-latent-s1` (`logs/jobs/side_f3_latent.txt`).
+- **00:05 R2-s0 (the decoder reads the predicted latent) → 1.3509.** FLOOR-s0 (decoder alone) is 1.5100, so **trunk info = 0.159 BPB**; the gate needs > 0.01. tf/copy 0.59. This costs +0.038 vs R1-s0, as expected for a costly rung. The first latent-only signal is strong.
+- **00:04 normal H-Net, 0.6B, seed 0, H100 → 1.4007** (A100: 1.3721). Plain N5·T7 reproduced exactly at 1.3619. The latent R0 (1.287 / 1.273) beats the H100 H-Net by ~0.12.
+- **00:07 scheduling.** Two guarded queues saw the same free GPU at once: a new job is invisible to nvidia-smi for 10–30 s. That started both 10B runs and the 3B latent run together on one GPU.
+  - The guard now takes a lock and leaves 2-minute launch reservations.
+  - The 10B pair (~7.5 h while sharing) is paused until the phase-3 hold, when the GPUs would otherwise wait for the user's review. `side-f3-latent-s1` keeps running.
