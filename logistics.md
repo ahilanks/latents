@@ -263,3 +263,14 @@ gates and job files. ⚠️ R0 re-runs the hcD3 recipe first to confirm the refa
 - **00:07 scheduling.** Two guarded queues saw the same free GPU at once: a new job is invisible to nvidia-smi for 10–30 s. That started both 10B runs and the 3B latent run together on one GPU.
   - The guard now takes a lock and leaves 2-minute launch reservations.
   - The 10B pair (~7.5 h while sharing) is paused until the phase-3 hold, when the GPUs would otherwise wait for the user's review. `side-f3-latent-s1` keeps running.
+- **00:58 H100 0.6B baselines complete** (paired by seed, same hardware and code):
+
+  | 0.6B, val BPB | s0 | s1 | mean |
+  |---|---|---|---|
+  | normal H-Net (N6·T9) | 1.4007 | 1.3729 | 1.3868 |
+  | same arch, no latent (N5·T7) | 1.3619 | 1.3786 | 1.3702 |
+  | latent R0 (N5·T7) | 1.2872 (rerun 1.2733) | 1.3148 | 1.301 |
+
+  The latent loss is worth **−0.069** against the same architecture and **−0.086** against H-Net (both seeds agree), about 4× the run-to-run noise. Same as the A100 result.
+- **00:52 gate R3 passed:** trunk info 0.127, tf/copy 0.61. The main net is trained only by latent prediction.
+- **00:31 L-FLOOR3B-s0 → 1.4092.**
