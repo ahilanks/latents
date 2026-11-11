@@ -120,3 +120,20 @@ def test_teacher_forced_thought_inputs():
         assert torch.allclose(ins[0], teach[0])
         pred, ins0, _ = th.thoughts(qb, [5], teacher=teach, p_true=0.0, return_inputs=True)
         assert torch.allclose(ins0[0], pred[0])
+
+
+def test_teacher_forced_parallel_matches_sequential():
+    m, lat, mc = make_latent_only(4)
+    m.eval()
+    th = Thinker(m, lat, mc)
+    rng = random.Random(5)
+    probs = [tasks.sample(rng, (2, 3)) for _ in range(2)]
+    qb = [bytes([BOS]) + p["q"].encode() for p in probs]
+    teach = [torch.randn(4, mc["d_model"][0]), torch.randn(6, mc["d_model"][0])]
+    with torch.no_grad():
+        a, ia, _ = th.thoughts(qb, [4, 6], teacher=teach, p_true=1.0, return_inputs=True, parallel=True)
+        b, ib, _ = th.thoughts(qb, [4, 6], teacher=teach, p_true=1.0, return_inputs=True, parallel=False)
+    for x, y in zip(a, b):
+        assert torch.allclose(x, y, atol=1e-5), (x - y).abs().max()
+    for x, y in zip(ia, ib):
+        assert torch.allclose(x, y)

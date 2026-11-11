@@ -68,7 +68,7 @@ class Thinker:
         return z, cu
 
     # ------------------------------------------------------------------ the chain
-    def thoughts(self, q_bytes, ks, teacher=None, p_true=0.0, return_inputs=False):
+    def thoughts(self, q_bytes, ks, teacher=None, p_true=0.0, return_inputs=False, parallel=True):
         """q_bytes: per example BOS + question. ks: thoughts per example. Returns per-example (k, D_t) predictions.
         teacher: per example (k, D_t) true chunk latents; each thought input is the true one with probability p_true."""
         x = self.batch(q_bytes)
@@ -77,6 +77,21 @@ class Thinker:
         mask = bp.boundary_mask.view(B, L)
         hv = h.view(B, L, -1)
         seqs = [self.pad(hv[b, :len(q_bytes[b])][mask[b, :len(q_bytes[b])]]) for b in range(B)]
+        d = [m for m in self.lat.head.modules() if isinstance(m, torch.nn.Linear)][-1].out_features
+        if teacher is not None and p_true >= 1.0 and parallel:
+            # teacher-forced: no thought depends on a prediction, so one causal pass over [question; true reasoning
+            # latents] gives every prediction (identical to the sequential loop, ~k times cheaper)
+            full = [torch.cat((seqs[b], self.pad(teacher[b][:ks[b]].to(h.dtype))), 0) for b in range(B)]
+            z, zcu = self.run_main(full)
+            pred, tin = [], []
+            for b in range(B):
+                q, k = seqs[b].shape[0], ks[b]
+                zb = z[zcu[b]:zcu[b + 1]]
+                pred.append(self.lat.head(zb[q - 1:q - 1 + k]).to(h.dtype) if k else h.new_zeros(0, d))
+                tin.append(teacher[b][:k].to(h.dtype) if k else h.new_zeros(0, d))
+            if return_inputs:
+                return pred, tin, [int(m.sum()) for m in mask]
+            return pred, [int(m.sum()) for m in mask]
         outs, ins = [[] for _ in range(B)], [[] for _ in range(B)]
         for t in range(max(ks) if ks else 0):
             act = [b for b in range(B) if t < ks[b]]

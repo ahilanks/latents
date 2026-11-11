@@ -59,6 +59,7 @@ def main():
     ap.add_argument("--teacher_only", action="store_true")
     ap.add_argument("--gamma", type=float, default=1.0)
     ap.add_argument("--w_lm", type=float, default=1.0)
+    ap.add_argument("--save_every", type=int, default=0, help="also save runs/<name>-s<step>/final.pt every N steps")
     a = ap.parse_args()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -106,8 +107,15 @@ def main():
         opt.step()
         opt.zero_grad(set_to_none=True)
         lat.after_step(model, step, a.steps)
+        if a.save_every and (step + 1) % a.save_every == 0 and step + 1 < a.steps:
+            model.eval()
+            d = ROOT / "runs" / f"{a.name}-s{step + 1}"
+            d.mkdir(parents=True, exist_ok=True)
+            torch.save({"model": model.state_dict(), "cfg": dict(cfg, name=d.name, data_dir=a.data_dir, think=dict(vars(a))),
+                        "latent": lat.state_dict()}, d / "final.pt")
+            model.train()
         if step % a.log_every == 0 or step == a.steps - 1:
-            rec = {"step": step, "loss": float(loss), "grad_norm": float(gn), "lr_scale": f, "problems": n_seen,
+            rec = {"step": step, "loss": float(loss.detach()), "grad_norm": float(gn), "lr_scale": f, "problems": n_seen,
                    "sec": round(time.time() - t0, 1)}
             rec.update({k: (float(v) if torch.is_tensor(v) else v) for k, v in st.items() if not k.startswith("_")})
             mlog.write(json.dumps(rec) + "\n")
