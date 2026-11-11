@@ -228,6 +228,7 @@ def main():
     ap.add_argument("--k", default="0,2,4,8,16,oracle")
     ap.add_argument("--n", type=int, default=1000)
     ap.add_argument("--n_cot", type=int, default=300)
+    ap.add_argument("--name", default=None, help="label for the job queue's log file only")
     a = ap.parse_args()
     for r in a.runs:
         evaluate(r, a.k.split(","), a.n, a.n_cot)

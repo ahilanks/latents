@@ -1,0 +1,9 @@
+# Chain-of-thought study: fine-tune the 3B checkpoint on synthetic arithmetic (no latent loss, question then answer (no reasoning)).
+base: side/plain_N5_T7.yaml
+group: cot
+data_dir: data/task_arith_nocot
+train:
+  total_bytes: 2.0e+8
+  lr: 5.0e-4
+  warmup_frac: 0.05
+  eval_every: 200
