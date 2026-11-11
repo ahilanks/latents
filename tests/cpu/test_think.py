@@ -73,3 +73,50 @@ def test_think_loss_trains_through_the_chain():
     out, _ = th.thoughts(qb, [4])
     out[0][-1].sum().backward()
     assert g(m.backbone.encoder) > 0
+
+
+def make_latent_only(seed=0):
+    """Like M1: fixed chunks, decoder reads the predicted latent, no byte gradient into the trunk."""
+    torch.manual_seed(seed)
+    mc = S.tiny_mc(seq_len=256, pool_k=4, dec_byte_emb=True)
+    mc["_latent_head"] = "mlp"
+    m = build_model(mc, device="cpu")
+    lat = LatentObjective(dict(EMA, decode_from_pred=True, detach_trunk=True), m, mc)
+    return m, lat, mc
+
+
+def grads(mod):
+    return sum(float(p.grad.abs().sum()) for p in mod.parameters() if p.grad is not None)
+
+
+def test_pure_loss_decoder_never_reaches_the_latents():
+    m, lat, mc = make_latent_only()
+    m.train()
+    th = Thinker(m, lat, mc)
+    rng = random.Random(2)
+    probs = [tasks.sample(rng, (2, 3)) for _ in range(3)]
+    loss, st = th.loss_pure(probs, p_true=0.5)
+    assert torch.isfinite(loss) and st["mean_k"] > 0
+    st["_ce_ans"].backward(retain_graph=True)  # the decoder's answer loss alone
+    bb = m.backbone
+    assert grads(bb.decoder) > 0
+    for name, mod in (("encoder", bb.encoder), ("main net", bb.main_network), ("latent head", lat.head),
+                      ("byte embedding", m.embeddings)):
+        assert grads(mod) == 0, f"decoder loss reached the {name}"
+    m.zero_grad(set_to_none=True)
+    lat.zero_grad(set_to_none=True)
+    loss.backward()  # the latent terms do train the trunk
+    assert grads(lat.head) > 0 and grads(bb.main_network) > 0 and grads(bb.encoder) > 0
+
+
+def test_teacher_forced_thought_inputs():
+    m, lat, mc = make_latent_only(1)
+    th = Thinker(m, lat, mc)
+    rng = random.Random(3)
+    qb = [bytes([BOS]) + tasks.sample(rng, (2, 2))["q"].encode()]
+    teach = [torch.randn(5, mc["d_model"][0])]
+    with torch.no_grad():
+        _, ins, _ = th.thoughts(qb, [5], teacher=teach, p_true=1.0, return_inputs=True)
+        assert torch.allclose(ins[0], teach[0])
+        pred, ins0, _ = th.thoughts(qb, [5], teacher=teach, p_true=0.0, return_inputs=True)
+        assert torch.allclose(ins0[0], pred[0])

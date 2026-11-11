@@ -1,0 +1,9 @@
+# Chain-of-thought study on the latent-only model (M1): fine-tune on synthetic arithmetic with written reasoning.
+base: ladder/r6_detach_trunk.yaml
+group: cot
+data_dir: data/task_arith
+train:
+  total_bytes: 2.0e+8
+  lr: 5.0e-4
+  warmup_frac: 0.05
+  eval_every: 200

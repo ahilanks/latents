@@ -3,6 +3,11 @@ thoughts that are never decoded; only the answer is.
 
 usage: python scripts/think_train.py --init runs/<pretrained run> --name <run> [--steps 1500] [--batch 64]
            [--lr 5e-4] [--beta 1.0] [--warmup 0.05] [--seed 0]
+           [--mode pure|e2e] [--p_true_frac 0.6 | --teacher_only] [--gamma 1.0] [--w_lm 1.0]
+mode pure (default; latents/think.py loss_pure): the decoder is trained on stop-gradient latents and never shapes
+the thoughts; thought inputs start as the true reasoning latents (p_true = 1) and anneal to the model's own over
+the first p_true_frac of training (--teacher_only keeps them true: the "read" step alone). Every step also trains
+on the full written examples (w_lm). mode e2e: the earlier loss (answer CE back-propagated through the thoughts).
 Writes runs/<name>/{final.pt, summary.json, metrics.jsonl} in the latents.train format, with data_dir set to the
 arithmetic task, so `python scripts/latent_cot.py runs/<name>` evaluates it.
 """
@@ -49,6 +54,11 @@ def main():
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--log_every", type=int, default=25)
     ap.add_argument("--data_dir", default="data/task_arith")
+    ap.add_argument("--mode", choices=["pure", "e2e"], default="pure")
+    ap.add_argument("--p_true_frac", type=float, default=0.6)
+    ap.add_argument("--teacher_only", action="store_true")
+    ap.add_argument("--gamma", type=float, default=1.0)
+    ap.add_argument("--w_lm", type=float, default=1.0)
     a = ap.parse_args()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -78,8 +88,16 @@ def main():
             g["lr"] = lr * f
         probs = [tasks.sample(rng) for _ in range(a.batch)]
         n_seen += len(probs)
+        if a.teacher_only:
+            p_true = 1.0
+        else:
+            p_true = max(0.0, 1.0 - step / max(1.0, a.p_true_frac * a.steps)) if a.p_true_frac > 0 else 0.0
         with torch.autocast(**ac):
-            loss, st = th.loss(probs, beta=a.beta)
+            if a.mode == "pure":
+                loss, st = th.loss_pure(probs, p_true=p_true, beta=a.beta, gamma=a.gamma, w_lm=a.w_lm,
+                                        step=step, total_steps=a.steps)
+            else:
+                loss, st = th.loss(probs, beta=a.beta)
         if not torch.isfinite(loss):
             print("non-finite loss; abort", flush=True)
             sys.exit(4)
@@ -89,9 +107,9 @@ def main():
         opt.zero_grad(set_to_none=True)
         lat.after_step(model, step, a.steps)
         if step % a.log_every == 0 or step == a.steps - 1:
-            rec = {"step": step, "loss": float(loss), "answer_ce": float(st["answer_ce"]), "thought_l1": float(st["thought_l1"]),
-                   "mean_k": st["mean_k"], "grad_norm": float(gn), "lr_scale": f, "problems": n_seen,
+            rec = {"step": step, "loss": float(loss), "grad_norm": float(gn), "lr_scale": f, "problems": n_seen,
                    "sec": round(time.time() - t0, 1)}
+            rec.update({k: (float(v) if torch.is_tensor(v) else v) for k, v in st.items() if not k.startswith("_")})
             mlog.write(json.dumps(rec) + "\n")
             mlog.flush()
             print(json.dumps(rec), flush=True)
