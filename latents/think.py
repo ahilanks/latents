@@ -33,20 +33,6 @@ from latents.models import fixed_routing, model_forward
 BOS = 254
 
 
-def info_nce(pred, tgt, tau=0.1, dup=0.98):
-    """Contrastive latent prediction (CPC): each predicted latent must pick its own target among the batch's targets
-    (cosine / tau). Near-duplicate targets (cos > dup) are not used as negatives. Returns (loss, top-1 accuracy)."""
-    p = F.normalize(pred.float(), dim=-1)
-    t = F.normalize(tgt.float(), dim=-1)
-    logits = p @ t.T / tau
-    with torch.no_grad():
-        eye = torch.eye(t.shape[0], dtype=torch.bool, device=t.device)
-        same = (t @ t.T > dup) & ~eye
-    logits = logits.masked_fill(same, float("-inf"))
-    lab = torch.arange(t.shape[0], device=t.device)
-    return F.cross_entropy(logits, lab), (logits.argmax(-1) == lab).float().mean().detach()
-
-
 class Thinker:
     def __init__(self, model, lat, mc):
         assert not mc.get("nest"), "1-level models only"
@@ -235,7 +221,7 @@ class Thinker:
             tgt = self.lat.ema_states(self.m, x)[mask].float()
             if getattr(self.lat, "target_norm", None) == "ln":
                 tgt = F.layer_norm(tgt, tgt.shape[-1:])
-        preds, tgts, real = [], [], []
+        preds, tgts = [], []
         for b in range(B):
             n_ans = rows[b].shape[0] - qn[b]
             if n_ans <= 0 or qn[b] + ks[b] == 0:
@@ -243,10 +229,7 @@ class Thinker:
             pos = torch.arange(qn[b] + ks[b] - 1, qn[b] + ks[b] - 1 + n_ans, device=x.device)
             preds.append(self.lat.head(zr[b][pos]).float())
             tgts.append(tgt[cu1[b] + qn[b]: cu1[b] + qn[b] + n_ans])
-            n_real = int(mv[b, :len(ctx_bytes[b])].sum()) - qn[b]  # answer chunks that start inside the example
-            real.append(torch.arange(n_ans, device=x.device) < n_real)
         l_ans_lat = (torch.cat(preds) - torch.cat(tgts)).abs().mean()
-        self._ans_pairs = (torch.cat(preds)[torch.cat(real)], torch.cat(tgts)[torch.cat(real)])
         # (b) the decoder reads the detached predicted latents: its loss updates the decoder only
         zc = torch.cat([torch.cat((zr[b][:qn[b]], zr[b][qn[b] + ks[b]:]), 0) for b in range(B)], 0).detach()
         with torch.no_grad():
@@ -255,11 +238,8 @@ class Thinker:
         lg_true = self._decode(x, h, mask, prob, sel, cu, cu1, self._true_src(src, tgt, cu1)) if dec_true else None
         return lg, l_ans_lat, lg_true
 
-    def loss_pure(self, probs, p_true=0.0, beta=1.0, gamma=1.0, w_lm=1.0, step=0, total_steps=1, dec_true=0.0,
-                  nce=0.0, nce_tau=0.1):
-        """nce > 0: + nce * InfoNCE(prediction, target) on the thoughts and on the answer chunks (latent-only: each
-        prediction must identify its own target latent among the batch's, a discriminative signal L1 regression lacks).
-        dec_true > 0: the decoder also learns to read the TRUE next-chunk latents (target encoder; detached) on the
+    def loss_pure(self, probs, p_true=0.0, beta=1.0, gamma=1.0, w_lm=1.0, step=0, total_steps=1, dec_true=0.0):
+        """dec_true > 0: the decoder also learns to read the TRUE next-chunk latents (target encoder; detached) on the
         full examples and on the answer -- the observation model trained on real encodings, as the trunk is."""
         B = len(probs)
         full = [bytes([BOS]) + (p["q"] + p["cot"] + p["answer"]).encode() for p in probs]
@@ -307,16 +287,6 @@ class Thinker:
         ce_ans = ans_ce(lg)
         loss = w_lm * (ce_lm + l_lat) + beta * l_th + gamma * l_ans_lat + ce_ans
         extra = {}
-        if nce > 0:
-            nz = [i for i, t in enumerate(tg) if t.shape[0]]
-            l_nce_th, acc_th = info_nce(torch.cat([pred[i] for i in nz]), torch.cat([tg[i] for i in nz]), nce_tau)
-            l_nce_ans, acc_ans = info_nce(*self._ans_pairs, nce_tau)
-            loss = loss + nce * (l_nce_th + l_nce_ans)
-            extra |= {"nce_th": l_nce_th.detach(), "nce_th_acc": acc_th, "nce_ans": l_nce_ans.detach(), "nce_ans_acc": acc_ans}
-        else:
-            with torch.no_grad():
-                _, acc_ans = info_nce(*self._ans_pairs, nce_tau)
-            extra |= {"nce_ans_acc": acc_ans}
         if dec_true > 0:
             # the decoder reads the true next-chunk latents: full examples + answer (decoder-only gradient)
             bp0 = out.bpred[0]

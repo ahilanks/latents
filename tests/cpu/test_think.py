@@ -161,23 +161,3 @@ def test_decoder_on_true_latents_is_decoder_only():
     out = Thinker._true_src(src, tgt, torch.tensor([0, 3, 5]))
     assert torch.equal(out, torch.tensor([[2., 3.], [4., 5.], [0., 0.], [8., 9.], [0., 0.]]))
 
-
-def test_nce_term_trains_trunk_only():
-    from latents.think import info_nce
-    m, lat, mc = make_latent_only()
-    m.train()
-    th = Thinker(m, lat, mc)
-    rng = random.Random(7)
-    probs = [tasks.sample(rng, (2, 3)) for _ in range(3)]
-    loss, st = th.loss_pure(probs, p_true=1.0, nce=1.0)
-    assert torch.isfinite(loss) and 0 <= float(st["nce_th_acc"]) <= 1 and "nce_ans" in st
-    loss.backward()
-    assert grads(lat.head) > 0 and grads(m.backbone.main_network) > 0
-    # perfect predictions are classified perfectly; duplicates are not negatives
-    t = torch.randn(6, 8)
-    l, acc = info_nce(t, t, 0.1)
-    l_bad, _ = info_nce(t[torch.randperm(6)], t, 0.1)
-    assert float(acc) == 1.0 and float(l) < float(l_bad)
-    t2 = torch.cat((t, t[:1]))
-    l2, acc2 = info_nce(t2, t2, 0.1)
-    assert torch.isfinite(l2)
