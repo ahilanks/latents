@@ -68,6 +68,9 @@ def main():
     ap.add_argument("--gamma", type=float, default=1.0)
     ap.add_argument("--w_lm", type=float, default=1.0)
     ap.add_argument("--dec_true", type=float, default=0.0, help="weight of the decoder's CE when reading the true next-chunk latents")
+    ap.add_argument("--freeze_enc", action="store_true",
+                    help="freeze byte embedding + encoder (+ router): the predictor learns to predict fixed latents "
+                         "(V-JEPA 2-AC recipe); stops the encoder from dropping hard-to-predict content")
     ap.add_argument("--lat", action="append", default=[], help="latent-config override key=value (repeatable)")
     ap.add_argument("--save_every", type=int, default=0, help="also save runs/<name>-s<step>/final.pt every N steps")
     a = ap.parse_args()
@@ -76,7 +79,15 @@ def main():
     torch.manual_seed(a.seed)
     cfg, model, lat = load(ROOT / a.init if not Path(a.init).is_absolute() else a.init, device, parse_over(a.lat))
     mc = cfg["model"]
+    if a.freeze_enc:
+        bb = model.backbone
+        for mod in (model.embeddings, bb.encoder, getattr(bb, "routing_module", None)):
+            if mod is not None:
+                mod.requires_grad_(False)
     groups, _ = param_groups(model, mc, a.wd)
+    for g in groups:
+        g["params"] = [p for p in g["params"] if p.requires_grad]
+    groups = [g for g in groups if g["params"]]
     opt_groups = [{k: g[k] for k in ("params", "weight_decay")} | {"lr": a.lr * g["lr_mult"]} for g in groups]
     lat_params = [p for p in lat.parameters() if p.requires_grad]
     if lat_params:
