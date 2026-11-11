@@ -298,3 +298,21 @@ gates and job files. ⚠️ R0 re-runs the hcD3 recipe first to confirm the refa
   - **3rd seed (R9 passed within noise of its threshold):** R9 = 1.4664 / 1.4795 / 1.4592 (mean 1.4684) vs R6 1.4508 / 1.4482 → **+0.019**, confirmed.
   - So under latent-only training, boundaries set by latent prediction error cost ~0.02 vs fixed 4-byte chunks. Gradient-trained routers fail.
   - M2 (R9 @3B) is running.
+- **04:40 ✅ Phase 2 complete: gate M2 passed** (R9 @3B: readout 1.3459 / 1.3505, trunk info 0.061, tf/copy 0.51). The ladder is **on hold before phase 3** (`logs/hold_P3`) until the user reviews the benchmarks. The 10B latent / no-latent pair restarted at 04:40.
+- **Phase-2 benchmarks** (`scripts/eval_suite.py`, standard H-Net/ATDC/DeepMem zero-shot set; report: https://claude.ai/artifact/P1egydDegMKeRhXQ76hpc8). At 3B:
+  - **7-task average (± ~0.5):**
+
+    | model | 7-task avg |
+    |---|---|
+    | BPE | 35.6 |
+    | joint latent | 33.1–33.6 |
+    | no latent | 33.0–33.2 |
+    | byte Transformer | 32.1 |
+    | latent-only M1 | 31.1–31.8 |
+    | H-Net N6·T9 | 31.6 |
+    | latent-only M2 | 31.1 |
+    | floor | 30.7 |
+
+    The latent loss does not move the average. It helps on LAMBADA (15.7–16.4 vs 14.4–14.9), SciQ (+1) and WikiText BPB (1.32–1.33 vs 1.36–1.39).
+  - **BPE:** best on ARC-e (43.4) and the average, but worst on SciQ (69.1) and much less robust to character noise: +2.25 BPB under the BLT noises vs ~1.6 for byte models.
+  - **Latent-only trunks:** reach the H-Net N6·T9 baseline's average, though not the joint models' BPB. Their predicted latents are as good a next-word probe as the joint model's (M2 42.5–45.0 vs 43.8–45.6; floor 13.2). The prediction-error boundaries (M2) give the best morpheme F1 of any model: 25.1–25.4 vs 13–17 for the joint and fixed-chunk models.
