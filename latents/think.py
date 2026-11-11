@@ -33,6 +33,20 @@ from latents.models import fixed_routing, model_forward
 BOS = 254
 
 
+def info_nce(pred, tgt, tau=0.1, dup=0.98):
+    """Contrastive latent prediction (CPC): each predicted latent must pick its own target among the batch's targets
+    (cosine / tau). Near-duplicate targets (cos > dup) are not used as negatives. Returns (loss, top-1 accuracy)."""
+    p = F.normalize(pred.float(), dim=-1)
+    t = F.normalize(tgt.float(), dim=-1)
+    logits = p @ t.T / tau
+    with torch.no_grad():
+        eye = torch.eye(t.shape[0], dtype=torch.bool, device=t.device)
+        same = (t @ t.T > dup) & ~eye
+    logits = logits.masked_fill(same, float("-inf"))
+    lab = torch.arange(t.shape[0], device=t.device)
+    return F.cross_entropy(logits, lab), (logits.argmax(-1) == lab).float().mean().detach()
+
+
 class Thinker:
     def __init__(self, model, lat, mc):
         assert not mc.get("nest"), "1-level models only"
@@ -176,7 +190,28 @@ class Thinker:
         return ce + beta * l_th, {"answer_ce": ce.detach(), "thought_l1": l_th.detach(), "mean_k": sum(ks) / len(ks)}
 
     # ------------------------------------------------------------------ the pure loss (decoder on stop-gradient)
-    def _answer_pass_pure(self, ctx_bytes, q_lens, inputs):
+    def _decode(self, x, h, mask, prob, sel, cu, cu1, src):
+        """Decoder logits (B, L, V) from chunk-level sources src (T1, D0); every input is detached (decoder-only grad)."""
+        B, L = x.shape
+        residual = self.bb.residual_proj(h.detach().to(self.bb.residual_proj.weight.dtype))
+        out = self.bb.dechunk_layer(src.detach(), mask, prob.detach(), cu1)
+        hd = self.bb.residual_func(out.to(residual.dtype), residual, sel.detach()).to(out.dtype)
+        if getattr(self.m, "dec_emb", None) is not None:
+            hd = hd + self.m.dec_emb(x).flatten(0, 1).to(hd.dtype)
+        hd = self.bb.decoder(hd, cu_seqlens=cu, max_seqlen=L)
+        return self.m.lm_head(hd).view(B, L, -1)
+
+    @staticmethod
+    def _true_src(src, tgt, cu1):
+        """Each chunk's source = the true latent of the next chunk (what the head predicts); a sequence's last chunk keeps src."""
+        nxt = torch.ones(src.shape[0], dtype=torch.bool, device=src.device)
+        nxt[(cu1[1:] - 1).long()] = False
+        j = torch.nonzero(nxt).squeeze(1)
+        out = src.clone()
+        out[j] = tgt[j + 1].to(src.dtype)
+        return out
+
+    def _answer_pass_pure(self, ctx_bytes, q_lens, inputs, dec_true=False):
         """Trunk part with grad (latent loss on the answer chunks), decoder part on detached inputs (CE)."""
         x = self.batch(ctx_bytes)
         B, L = x.shape
@@ -200,7 +235,7 @@ class Thinker:
             tgt = self.lat.ema_states(self.m, x)[mask].float()
             if getattr(self.lat, "target_norm", None) == "ln":
                 tgt = F.layer_norm(tgt, tgt.shape[-1:])
-        preds, tgts = [], []
+        preds, tgts, real = [], [], []
         for b in range(B):
             n_ans = rows[b].shape[0] - qn[b]
             if n_ans <= 0 or qn[b] + ks[b] == 0:
@@ -208,20 +243,24 @@ class Thinker:
             pos = torch.arange(qn[b] + ks[b] - 1, qn[b] + ks[b] - 1 + n_ans, device=x.device)
             preds.append(self.lat.head(zr[b][pos]).float())
             tgts.append(tgt[cu1[b] + qn[b]: cu1[b] + qn[b] + n_ans])
+            n_real = int(mv[b, :len(ctx_bytes[b])].sum()) - qn[b]  # answer chunks that start inside the example
+            real.append(torch.arange(n_ans, device=x.device) < n_real)
         l_ans_lat = (torch.cat(preds) - torch.cat(tgts)).abs().mean()
+        self._ans_pairs = (torch.cat(preds)[torch.cat(real)], torch.cat(tgts)[torch.cat(real)])
         # (b) the decoder reads the detached predicted latents: its loss updates the decoder only
         zc = torch.cat([torch.cat((zr[b][:qn[b]], zr[b][qn[b] + ks[b]:]), 0) for b in range(B)], 0).detach()
         with torch.no_grad():
             src = self.lat.head(zc).to(hc.dtype) if self.lat.decode_from_pred else zc[..., : hc.shape[-1]]
-        residual = self.bb.residual_proj(h.detach().to(self.bb.residual_proj.weight.dtype))
-        out = self.bb.dechunk_layer(src, mask, prob.detach(), cu1)
-        hd = self.bb.residual_func(out.to(residual.dtype), residual, sel.detach()).to(out.dtype)
-        if getattr(self.m, "dec_emb", None) is not None:
-            hd = hd + self.m.dec_emb(x).flatten(0, 1).to(hd.dtype)
-        hd = self.bb.decoder(hd, cu_seqlens=cu, max_seqlen=L)
-        return self.m.lm_head(hd).view(B, L, -1), l_ans_lat
+        lg = self._decode(x, h, mask, prob, sel, cu, cu1, src)
+        lg_true = self._decode(x, h, mask, prob, sel, cu, cu1, self._true_src(src, tgt, cu1)) if dec_true else None
+        return lg, l_ans_lat, lg_true
 
-    def loss_pure(self, probs, p_true=0.0, beta=1.0, gamma=1.0, w_lm=1.0, step=0, total_steps=1):
+    def loss_pure(self, probs, p_true=0.0, beta=1.0, gamma=1.0, w_lm=1.0, step=0, total_steps=1, dec_true=0.0,
+                  nce=0.0, nce_tau=0.1):
+        """nce > 0: + nce * InfoNCE(prediction, target) on the thoughts and on the answer chunks (latent-only: each
+        prediction must identify its own target latent among the batch's, a discriminative signal L1 regression lacks).
+        dec_true > 0: the decoder also learns to read the TRUE next-chunk latents (target encoder; detached) on the
+        full examples and on the answer -- the observation model trained on real encodings, as the trunk is."""
         B = len(probs)
         full = [bytes([BOS]) + (p["q"] + p["cot"] + p["answer"]).encode() for p in probs]
         x = self.batch(full)
@@ -255,15 +294,40 @@ class Thinker:
         l_th = torch.cat([(a.float() - t).abs().mean(-1) for a, t in zip(pred, tg) if t.shape[0]]).mean()
         # 3. answer: latent loss on its chunks (trunk) + decoder CE on stop-gradient latents (decoder only)
         ctx = [q + p["answer"].encode() for q, p in zip(qb, probs)]
-        lg, l_ans_lat = self._answer_pass_pure(ctx, [len(q) for q in qb], ins)
-        ce, n = 0.0, 0
-        for b, (q, c) in enumerate(zip(qb, ctx)):
-            a0 = len(q) + 5
-            ce = ce + F.cross_entropy(lg[b, a0 - 1: len(c) - 1].float(), torch.tensor(list(c[a0:]), device=lg.device),
-                                      reduction="sum")
-            n += len(c) - a0
-        ce_ans = ce / n
+        lg, l_ans_lat, lg_true = self._answer_pass_pure(ctx, [len(q) for q in qb], ins, dec_true=dec_true > 0)
+
+        def ans_ce(lg):
+            ce, n = 0.0, 0
+            for b, (q, c) in enumerate(zip(qb, ctx)):
+                a0 = len(q) + 5
+                ce = ce + F.cross_entropy(lg[b, a0 - 1: len(c) - 1].float(), torch.tensor(list(c[a0:]), device=lg.device),
+                                          reduction="sum")
+                n += len(c) - a0
+            return ce / n
+        ce_ans = ans_ce(lg)
         loss = w_lm * (ce_lm + l_lat) + beta * l_th + gamma * l_ans_lat + ce_ans
+        extra = {}
+        if nce > 0:
+            nz = [i for i, t in enumerate(tg) if t.shape[0]]
+            l_nce_th, acc_th = info_nce(torch.cat([pred[i] for i in nz]), torch.cat([tg[i] for i in nz]), nce_tau)
+            l_nce_ans, acc_ans = info_nce(*self._ans_pairs, nce_tau)
+            loss = loss + nce * (l_nce_th + l_nce_ans)
+            extra |= {"nce_th": l_nce_th.detach(), "nce_th_acc": acc_th, "nce_ans": l_nce_ans.detach(), "nce_ans_acc": acc_ans}
+        else:
+            with torch.no_grad():
+                _, acc_ans = info_nce(*self._ans_pairs, nce_tau)
+            extra |= {"nce_ans_acc": acc_ans}
+        if dec_true > 0:
+            # the decoder reads the true next-chunk latents: full examples + answer (decoder-only gradient)
+            bp0 = out.bpred[0]
+            src_pred = self.lat.head(out.z_full).to(out.chunks.dtype)
+            lg_full = self._decode(x, out.enc, bp0.boundary_mask, bp0.boundary_prob, bp0.selected_probs, out.cu0,
+                                   out.cu1, self._true_src(src_pred, tgt, out.cu1))
+            ce_t = F.cross_entropy(lg_full[:, :-1].float().flatten(0, 1), x[:, 1:].flatten(), reduction="none").view(B, L - 1)
+            ce_lm_true = (ce_t * valid).sum() / valid.sum()
+            ce_ans_true = ans_ce(lg_true)
+            loss = loss + dec_true * (w_lm * ce_lm_true + ce_ans_true)
+            extra |= {"lm_ce_true": ce_lm_true.detach(), "answer_ce_true": ce_ans_true.detach()}
         return loss, {"answer_ce": ce_ans.detach(), "thought_l1": l_th.detach(), "answer_lat_l1": l_ans_lat.detach(),
                       "lm_ce": ce_lm.detach(), "lm_lat": l_lat.detach(), "mean_k": sum(ks) / len(ks), "p_true": p_true,
-                      "_ce_ans": ce_ans}
+                      "_ce_ans": ce_ans} | extra

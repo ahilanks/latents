@@ -59,6 +59,9 @@ def main():
     ap.add_argument("--teacher_only", action="store_true")
     ap.add_argument("--gamma", type=float, default=1.0)
     ap.add_argument("--w_lm", type=float, default=1.0)
+    ap.add_argument("--dec_true", type=float, default=0.0, help="weight of the decoder's CE when reading the true next-chunk latents")
+    ap.add_argument("--nce", type=float, default=0.0, help="weight of the contrastive (InfoNCE) latent loss on thoughts + answer")
+    ap.add_argument("--nce_tau", type=float, default=0.1)
     ap.add_argument("--save_every", type=int, default=0, help="also save runs/<name>-s<step>/final.pt every N steps")
     a = ap.parse_args()
 
@@ -96,7 +99,8 @@ def main():
         with torch.autocast(**ac):
             if a.mode == "pure":
                 loss, st = th.loss_pure(probs, p_true=p_true, beta=a.beta, gamma=a.gamma, w_lm=a.w_lm,
-                                        step=step, total_steps=a.steps)
+                                        step=step, total_steps=a.steps, dec_true=a.dec_true,
+                                        nce=a.nce, nce_tau=a.nce_tau)
             else:
                 loss, st = th.loss(probs, beta=a.beta)
         if not torch.isfinite(loss):

@@ -137,3 +137,47 @@ def test_teacher_forced_parallel_matches_sequential():
         assert torch.allclose(x, y, atol=1e-5), (x - y).abs().max()
     for x, y in zip(ia, ib):
         assert torch.allclose(x, y)
+
+
+def test_decoder_on_true_latents_is_decoder_only():
+    m, lat, mc = make_latent_only()
+    m.train()
+    th = Thinker(m, lat, mc)
+    rng = random.Random(6)
+    probs = [tasks.sample(rng, (2, 3)) for _ in range(3)]
+    l0, _ = th.loss_pure(probs, p_true=1.0)
+    rng = random.Random(6)
+    probs = [tasks.sample(rng, (2, 3)) for _ in range(3)]
+    l1, st = th.loss_pure(probs, p_true=1.0, dec_true=1.0)
+    assert "answer_ce_true" in st and "lm_ce_true" in st
+    (l1 - l0).backward()  # the true-latent decoder terms alone (same batch, same randomness)
+    bb = m.backbone
+    assert grads(bb.decoder) > 0
+    for name, mod in (("encoder", bb.encoder), ("main net", bb.main_network), ("latent head", lat.head),
+                      ("byte embedding", m.embeddings)):
+        assert grads(mod) < 1e-6, f"true-latent decoder loss reached the {name}"
+    # the true source is the next chunk's target latent, within each sequence
+    src, tgt = torch.zeros(5, 2), torch.arange(10.).view(5, 2)
+    out = Thinker._true_src(src, tgt, torch.tensor([0, 3, 5]))
+    assert torch.equal(out, torch.tensor([[2., 3.], [4., 5.], [0., 0.], [8., 9.], [0., 0.]]))
+
+
+def test_nce_term_trains_trunk_only():
+    from latents.think import info_nce
+    m, lat, mc = make_latent_only()
+    m.train()
+    th = Thinker(m, lat, mc)
+    rng = random.Random(7)
+    probs = [tasks.sample(rng, (2, 3)) for _ in range(3)]
+    loss, st = th.loss_pure(probs, p_true=1.0, nce=1.0)
+    assert torch.isfinite(loss) and 0 <= float(st["nce_th_acc"]) <= 1 and "nce_ans" in st
+    loss.backward()
+    assert grads(lat.head) > 0 and grads(m.backbone.main_network) > 0
+    # perfect predictions are classified perfectly; duplicates are not negatives
+    t = torch.randn(6, 8)
+    l, acc = info_nce(t, t, 0.1)
+    l_bad, _ = info_nce(t[torch.randperm(6)], t, 0.1)
+    assert float(acc) == 1.0 and float(l) < float(l_bad)
+    t2 = torch.cat((t, t[:1]))
+    l2, acc2 = info_nce(t2, t2, 0.1)
+    assert torch.isfinite(l2)
