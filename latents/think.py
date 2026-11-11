@@ -47,8 +47,10 @@ class Thinker:
         p = self.inner.pad_dimension
         return v if p is None else torch.cat((v, p.expand(v.shape[0], -1).to(v.dtype)), -1)
 
+    pad_extra = 0  # tests: extra padding, which must not change any loss
+
     def batch(self, seqs):
-        L = (max(len(s) for s in seqs) + 63) // 64 * 64
+        L = (max(len(s) for s in seqs) + 63) // 64 * 64 + self.pad_extra
         x = torch.zeros(len(seqs), L, dtype=torch.long, device=self.m.lm_head.weight.device)
         for i, s in enumerate(seqs):
             x[i, :len(s)] = torch.tensor(list(s), device=x.device)
@@ -223,7 +225,7 @@ class Thinker:
                 tgt = F.layer_norm(tgt, tgt.shape[-1:])
         preds, tgts = [], []
         for b in range(B):
-            n_ans = rows[b].shape[0] - qn[b]
+            n_ans = int(mv[b, :len(ctx_bytes[b])].sum()) - qn[b]  # answer chunks that start inside the example
             if n_ans <= 0 or qn[b] + ks[b] == 0:
                 continue
             pos = torch.arange(qn[b] + ks[b] - 1, qn[b] + ks[b] - 1 + n_ans, device=x.device)
@@ -253,7 +255,9 @@ class Thinker:
         valid = (torch.arange(L - 1, device=x.device)[None, :] < (lens[:, None] - 1)).float()
         ce_tok = F.cross_entropy(out.logits[:, :-1].float().flatten(0, 1), x[:, 1:].flatten(), reduction="none").view(B, L - 1)
         ce_lm = (ce_tok * valid).sum() / valid.sum()
-        l_lat, st_lat = self.lat.loss(self.m, out, x, step=step, total_steps=total_steps)
+        real_pos = torch.arange(L, device=x.device)[None, :] < lens[:, None]
+        chunk_valid = real_pos.flatten()[out.bpred[0].boundary_mask]
+        l_lat, st_lat = self.lat.loss(self.m, out, x, step=step, total_steps=total_steps, chunk_valid=chunk_valid)
         # thought targets and teacher inputs: the reasoning chunks of this forward
         with torch.no_grad():
             tgt = self.lat.targets(self.m, out, x).float()

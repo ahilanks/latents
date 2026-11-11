@@ -302,11 +302,15 @@ class LatentObjective(nn.Module):
         d = pred - tgt
         return d.pow(2) if self.dist == "l2" else d.abs()
 
-    def loss(self, model, out, x, step=0, total_steps=1, scale=1.0):
+    def loss(self, model, out, x, step=0, total_steps=1, scale=1.0, chunk_valid=None):
+        """chunk_valid: optional (T1,) bool, False for chunks made of padding (rows padded to a common length); those
+        are never targets and are left out of the regularizer, so padding cannot dilute the latent loss."""
         tgt_raw = self.targets(model, out, x).float()
         tgt = F.layer_norm(tgt_raw, tgt_raw.shape[-1:]) if self.target_norm == "ln" else tgt_raw
         T1 = tgt.shape[0]
         j = next_pairs(out.cu1, T1, 1)
+        if chunk_valid is not None:
+            j = j[chunk_valid[j + 1]]
         pred_all = self.head(out.z_full)  # (T1, D0)
         pred = pred_all[j].float()
         l_tf = self.dist_fn(pred, tgt[j + 1]).mean()
@@ -314,6 +318,8 @@ class LatentObjective(nn.Module):
         st = {"lat/tf_l1": l_tf if self.dist == "l1" else (pred - tgt[j + 1]).abs().mean().detach()}
         for k, hk in zip(self.horizons, self.hheads):
             jk = next_pairs(out.cu1, T1, k)
+            if chunk_valid is not None:
+                jk = jk[chunk_valid[jk + k]]
             l_k = self.dist_fn(hk(out.z_full[jk]).float(), tgt[jk + k]).mean()
             loss = loss + self.beta_h * l_k / len(self.horizons)
             st[f"lat/tf{k}_l1"] = l_k
@@ -332,7 +338,13 @@ class LatentObjective(nn.Module):
             st["lat/cpc"] = l_c
             st["lat/cpc_acc"] = acc
         if self.reg != "none":
-            l_reg, st_r = self.reg_loss(out.chunks, out.cu1, step, total_steps)
+            if chunk_valid is None:
+                l_reg, st_r = self.reg_loss(out.chunks, out.cu1, step, total_steps)
+            else:
+                row, _ = row_ids(out.cu1, T1)
+                n = torch.zeros(out.cu1.numel() - 1, dtype=torch.long, device=row.device).index_add_(0, row, chunk_valid.long())
+                cu_v = torch.cat((n.new_zeros(1), n.cumsum(0))).to(out.cu1.dtype)
+                l_reg, st_r = self.reg_loss(out.chunks[chunk_valid], cu_v, step, total_steps)
             loss = loss + self.beta_reg * l_reg
             st["lat/reg"] = l_reg
             st.update(st_r)

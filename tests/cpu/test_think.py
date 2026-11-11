@@ -191,3 +191,18 @@ def test_vicreg_corr_option():
     assert torch.isfinite(loss) and "lat_reg_cov" in st and float(st["lat_participation"]) > 0
     loss.backward()
     assert grads(m.backbone.encoder) > 0
+
+
+def test_padding_never_changes_the_losses():
+    m, lat, mc = make_latent_only()
+    m.eval()  # no dropout; losses only
+    th = Thinker(m, lat, mc)
+    probs = [tasks.sample(random.Random(10), (2, 3)) for _ in range(3)]
+    out = []
+    for extra in (0, 128):
+        th.pad_extra = extra
+        with torch.no_grad():
+            _, st = th.loss_pure(probs, p_true=1.0, step=10 ** 6, total_steps=10 ** 6 + 1, dec_true=1.0)
+        out.append(st)
+    for k in ("answer_ce", "thought_l1", "answer_lat_l1", "lm_ce", "lm_lat", "answer_ce_true", "lm_ce_true"):
+        assert abs(float(out[0][k]) - float(out[1][k])) < 1e-4, (k, float(out[0][k]), float(out[1][k]))
