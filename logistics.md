@@ -293,3 +293,8 @@ gates and job files. ⚠️ R0 re-runs the hcD3 recipe first to confirm the refa
   - **The latent runs spread only ~0.002:** the latent loss also makes training much more reproducible.
   - The gain shrinks with data (−0.069 at 0.6B) but is not gone. The 10B pair will tell whether it keeps shrinking.
 - **03:13–03:17 R7 (identity router) killed on both seeds at step 2000:** +0.10 vs R6 (~5× noise). Boundaries were on target (0.25) and word-like (edge prec 0.55–0.70), yet worse than fixed chunks under latent-only training. Phase 2 continues with R8 and R9.
+- **03:39 phase 2 select → R9 (prediction-error boundaries).** R7 (identity router) and R8 (STE router) were killed on both seeds at 87%: +0.10 to +0.17 vs R6. R8 also collapsed: target eff. rank ~40, tf/copy > 1 by mid-training. R9 passed at +0.023.
+  - Fix before select (e7e0ecd): R8/R9 were judged against R7, which was killed, so they failed automatically. All phase-2 rungs replace R6's fixed chunks, so the reference now falls back to R6.
+  - **3rd seed (R9 passed within noise of its threshold):** R9 = 1.4664 / 1.4795 / 1.4592 (mean 1.4684) vs R6 1.4508 / 1.4482 → **+0.019**, confirmed.
+  - So under latent-only training, boundaries set by latent prediction error cost ~0.02 vs fixed 4-byte chunks. Gradient-trained routers fail.
+  - M2 (R9 @3B) is running.
