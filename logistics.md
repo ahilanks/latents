@@ -280,3 +280,4 @@ gates and job files. ⚠️ R0 re-runs the hcD3 recipe first to confirm the refa
   - **At 3B the latent loss gives no clear compute-adjusted gain yet.** At 0.6B it was −0.069 (≈4× noise).
   - To settle it: an H100 no-latent seed 0, and the compute-matched control (`side-f3-plain-3p2B-s0-r2`).
 - **01:31 gate R6 passed (go/no-go):** the fully latent-only trunk (no byte gradient into encoder, router or main net) keeps trunk info 0.057 (R5: ~0.12), tf/copy 0.59, and no collapse (within 0.994, eff. rank 227). M1 (R6 @3B) is running.
+- **02:57 ✅ Phase 1 complete: gate M1 passed.** R6 at 3B (fully latent-only trunk: no byte gradient into encoder, router or main net). Readout 1.2989 / 1.2900 vs FLOOR3B 1.4092 → **trunk info 0.115**; it was 0.057 at 0.6B, so it grows with data. tf/copy 0.547. Phase 2 (routers R7–R9) starts. The queue's `L-R1-s*:3` entries are the first-try kills; the reruns passed.
