@@ -274,3 +274,9 @@ gates and job files. ⚠️ R0 re-runs the hcD3 recipe first to confirm the refa
   The latent loss is worth **−0.069** against the same architecture and **−0.086** against H-Net (both seeds agree), about 4× the run-to-run noise. Same as the A100 result.
 - **00:52 gate R3 passed:** trunk info 0.127, tf/copy 0.61. The main net is trained only by latent prediction.
 - **00:31 L-FLOOR3B-s0 → 1.4092.**
+- **01:41 clean 3B pair (H100, seed 1, same code): latent `side-f3-latent-s1` 1.1088 vs no-latent `side-f3-plain-s1` 1.1169 → −0.008 BPB, at +10.6% FLOPs.**
+  - The latent run reproduces the A100 seed-1 result (1.1081), so the old no-latent seed-0 control (1.1361) was probably a bad run, and "−0.030 at 3B" overstated the gain.
+  - Compute-adjusted, the no-latent curve gains ~0.097 BPB per doubling, so +10.6% FLOPs is worth ~0.014. On seed 1 that is more than the latent gain.
+  - **At 3B the latent loss gives no clear compute-adjusted gain yet.** At 0.6B it was −0.069 (≈4× noise).
+  - To settle it: an H100 no-latent seed 0, and the compute-matched control (`side-f3-plain-3p2B-s0-r2`).
+- **01:31 gate R6 passed (go/no-go):** the fully latent-only trunk (no byte gradient into encoder, router or main net) keeps trunk info 0.057 (R5: ~0.12), tf/copy 0.59, and no collapse (within 0.994, eff. rank 227). M1 (R6 @3B) is running.
