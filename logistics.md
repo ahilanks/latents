@@ -411,3 +411,29 @@ gates and job files. ⚠️ R0 re-runs the hcD3 recipe first to confirm the refa
     - Combine thought_grad with the padding fix and train longer.
     - The units digit: the main net's `z` still holds only 67%.
     - Then own-thought rollouts at inference. Hierarchy comes later, via nesting.
+- **13:25 (2026-11-11) L2 vs L1 latent loss, from scratch, same budget.**
+  - **Pretraining.** L-M1-l2-s0 is identical to L-M1-s0 (r6_detach_trunk, 3e9 bytes, seed 0) except `latent.dist=l2`. The configs were diffed: the only difference is `dist`.
+  - **Thought stage.** The same recipe on both bases, with the current code (padding fix): 3000 steps × 256, teacher-forced, `--dec_true 1`, no thought_grad.
+  - Evaluated on all 2000 test problems, with true reasoning latents as thoughts.
+
+  | | pretrain val bpb | acc | by steps 2–8 | no thoughts | decoder reads pred / true | probe true / z / pred |
+  |---|---|---|---|---|---|---|
+  | hnet-cot, written CoT (reference) | | 94.6 | 100 100 100 100 100 93 71 | 0.2 | | |
+  | L1: L-M1-s0 → think-base-l1 | 1.2989 | 78.1 | 97 93 95 90 89 76 **7** | 2.0 | 78.5 / 99.8 | 99.9 / 75.0 / 70.9 |
+  | **L2: L-M1-l2-s0 → think-base-l2** | **1.2554** | **97.2** | **100 99 99 99 98 97 88** | 2.1 | **97.1 / 100** | **100 / 98.1 / 97.8** |
+
+  - **L2 from scratch is much better than L1, on both measures:**
+    - Pretraining: −0.043 BPB. Seed noise at 3B is about 0.003.
+    - Latent reading: 97.2% vs 78.1%. The main net's `z` holds the answer 98% vs 75%.
+  - **The earlier "L2 is worse" result was an artifact.** Switching an L1-trained model to L2 mid-fine-tune gave 38%. The user's doubt was right.
+  - **Reading true reasoning latents now beats written CoT:**
+    - 97.2% vs 94.6% overall.
+    - On the out-of-range lengths: 97% vs 93% at 7 steps, 88% vs 71% at 8.
+    - Within the training range it is 98–100%.
+    - Caveat: this is *reading* (the thoughts are the true reasoning latents). Written CoT generates its own reasoning, so it is not yet an apples-to-apples latent-reasoning result.
+  - **Also:** starting from the base with the fixed code (L1, no thought_grad) gives 78.1%, above think-tgrad's 76.6% from T-read.
+  - **Next:**
+    1. **Make L2 the default latent loss** (re-check BPB with a second seed).
+    2. **Re-run the ladder milestones with L2?**
+    3. **Producing thoughts:** feed the model's *own* predicted thoughts at inference. The thought L1 is still 0.36 on L2, so rollout error will compound. Measure that first, then try temporal abstraction through nesting.
+    4. **Add thought_grad on the L2 base.**
