@@ -448,7 +448,8 @@ def task_chunks(sc, limit):
         x = torch.from_numpy(xs).to(sc.device)
         o = sc.forward(x)
         mask = o.bpred[0].boundary_mask.view(x.shape).cpu().numpy()
-        pred = sc.lat.head(o.z_full).float().cpu() if sc.lat is not None else o.z.float().cpu()
+        with torch.no_grad():  # the latent head is fp32 and outside the scorer's no_grad forward
+            pred = sc.lat.head(o.z_full.float()).float().cpu() if sc.lat is not None else o.z.float().cpu()
         ch = o.chunks.float().cpu()
         k = 0
         for r in range(xs.shape[0]):
