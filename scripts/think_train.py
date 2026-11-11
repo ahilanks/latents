@@ -30,15 +30,23 @@ from latents.models import build_model, param_groups  # noqa: E402
 from latents.think import Thinker  # noqa: E402
 
 
-def load(run, device):
+def load(run, device, lat_over=None):
     ck = torch.load(Path(run) / "final.pt", map_location=device, weights_only=False)
     cfg = ck["cfg"]
+    if lat_over:
+        cfg["latent"] = dict(cfg["latent"], **lat_over)
     model = build_model(cfg["model"], device=device)
     model.load_state_dict(ck["model"])
     lat = latent_lib.build(cfg["latent"], model, cfg["model"])
     missing, unexpected = lat.load_state_dict(ck["latent"], strict=False)
     assert not unexpected and set(missing) <= {"gamma_est", "rf_baseline"}, (missing, unexpected)
     return cfg, model, lat
+
+
+def parse_over(items):
+    """--lat key=value overrides of the latent config (yaml-typed values), e.g. --lat reg=sigreg --lat dist=l2."""
+    import yaml
+    return {k: yaml.safe_load(v) for k, v in (it.split("=", 1) for it in items or [])}
 
 
 def main():
@@ -60,12 +68,13 @@ def main():
     ap.add_argument("--gamma", type=float, default=1.0)
     ap.add_argument("--w_lm", type=float, default=1.0)
     ap.add_argument("--dec_true", type=float, default=0.0, help="weight of the decoder's CE when reading the true next-chunk latents")
+    ap.add_argument("--lat", action="append", default=[], help="latent-config override key=value (repeatable)")
     ap.add_argument("--save_every", type=int, default=0, help="also save runs/<name>-s<step>/final.pt every N steps")
     a = ap.parse_args()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     torch.manual_seed(a.seed)
-    cfg, model, lat = load(ROOT / a.init if not Path(a.init).is_absolute() else a.init, device)
+    cfg, model, lat = load(ROOT / a.init if not Path(a.init).is_absolute() else a.init, device, parse_over(a.lat))
     mc = cfg["model"]
     groups, _ = param_groups(model, mc, a.wd)
     opt_groups = [{k: g[k] for k in ("params", "weight_decay")} | {"lr": a.lr * g["lr_mult"]} for g in groups]

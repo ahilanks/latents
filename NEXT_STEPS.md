@@ -8,6 +8,23 @@ The trunk (encoder, router, and a predictor at every level) learns only from lat
 
 Two losses stay because they constrain the model rather than carry information about the text: the ratio loss (how many chunks, i.e. compute) and an anti-collapse regularizer.
 
+### North star
+- **Target architecture: the Recursive H-Net** ([design artifact](https://claude.ai/artifact/Bq16b6fRViYnRtkDgWeM4w)).
+  - One shared encoder, chunker and decoder, looped across levels.
+  - An up/predict depth router with halting weights.
+  - Think/emit latent reasoning and a halt router.
+  - Latent-only training, with the decoder on stop-gradient.
+  - Long horizons and longer, temporally abstracted rollouts come from hierarchy, i.e. nesting.
+- **Guiding principles:** section 1, "Forming a Rich Internal Dynamics Model", of [this write-up](https://ahilanks.github.io/writings/p/782e42e685f06f174968ab00f85ff192.html).
+  - Predict in latent space and keep only the structure needed to predict consequences.
+  - Prevent collapse without negatives: a stop-gradient EMA target, plus a regularizer such as SIGReg or VICReg.
+  - No regularizer that ties back to the raw input (no reconstruction).
+- **Rules that follow from these:**
+  - Only non-contrastive objectives.
+  - Nothing hard-coded (e.g. no task-aligned chunking).
+  - The decoder gets its own loss, but its gradient never reaches the latents, encoder or trunk.
+  - Train teacher-forced on real encodings only. The model "dreams" in its own rollouts only at inference.
+
 ## Running it
 
 We run on one pod with **2× H100 80GB**. The job runner uses whatever GPUs it sees, so 2, 4 or 8 of any 80GB card work.

@@ -8,6 +8,23 @@ from an EMA target encoder, with an L1 teacher-forcing loss plus a 2-step rollou
 L_TF = Σ_j ‖P(c_≤j) − sg(c̄_{j+1})‖₁        L_R = ‖P(c_≤j, ĉ_{j+1}) − sg(c̄_{j+2})‖₁,  ĉ_{j+1} = P(c_≤j)
 ```
 
+## North star
+- **Target architecture: the Recursive H-Net** ([design artifact](https://claude.ai/artifact/Bq16b6fRViYnRtkDgWeM4w)).
+  - One shared encoder, chunker and decoder, looped across levels.
+  - An up/predict depth router with halting weights.
+  - Think/emit latent reasoning and a halt router.
+  - Latent-only training, with the decoder on stop-gradient.
+  - Long horizons and longer, temporally abstracted rollouts come from hierarchy, i.e. nesting.
+- **Guiding principles:** section 1, "Forming a Rich Internal Dynamics Model", of [this write-up](https://ahilanks.github.io/writings/p/782e42e685f06f174968ab00f85ff192.html).
+  - Predict in latent space and keep only the structure needed to predict consequences.
+  - Prevent collapse without negatives: a stop-gradient EMA target, plus a regularizer such as SIGReg or VICReg.
+  - No regularizer that ties back to the raw input (no reconstruction).
+- **Rules that follow from these:**
+  - Only non-contrastive objectives.
+  - Nothing hard-coded (e.g. no task-aligned chunking).
+  - The decoder gets its own loss, but its gradient never reaches the latents, encoder or trunk.
+  - Train teacher-forced on real encodings only. The model "dreams" in its own rollouts only at inference.
+
 ## Ground rules (from the project brief)
 1. First **reproduce H-Net at small scale** and match the best published small-scale results.
 2. Then move toward the final setup **one small change at a time**. Each change is trained and

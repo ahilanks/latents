@@ -97,6 +97,7 @@ class LatentObjective(nn.Module):
         self.head = make_head(lcfg.get("head", "linear"), D1, D0, dev)
         self.hheads = nn.ModuleList([make_head(lcfg.get("head", "linear"), D1, D0, dev) for _ in self.horizons])
         # ladder knobs
+        self.dist = lcfg.get("dist", "l1")  # l1 | l2 (squared error): the prediction distance of the TF losses
         self.reg = lcfg.get("reg", "none")  # none | var | vicreg | sigreg
         self.reg_scope = lcfg.get("reg_scope", "within")  # within | batch
         self.beta_reg = float(lcfg.get("beta_reg", 1.0))
@@ -286,6 +287,11 @@ class LatentObjective(nn.Module):
         return loss, st
 
     # ------------------------------------------------------------------ loss
+    def dist_fn(self, pred, tgt):
+        """Element-wise prediction distance (mean it yourself): |p - t| (l1, default) or (p - t)^2 (l2)."""
+        d = pred - tgt
+        return d.pow(2) if self.dist == "l2" else d.abs()
+
     def loss(self, model, out, x, step=0, total_steps=1, scale=1.0):
         tgt_raw = self.targets(model, out, x).float()
         tgt = F.layer_norm(tgt_raw, tgt_raw.shape[-1:]) if self.target_norm == "ln" else tgt_raw
@@ -293,12 +299,12 @@ class LatentObjective(nn.Module):
         j = next_pairs(out.cu1, T1, 1)
         pred_all = self.head(out.z_full)  # (T1, D0)
         pred = pred_all[j].float()
-        l_tf = (pred - tgt[j + 1]).abs().mean()
+        l_tf = self.dist_fn(pred, tgt[j + 1]).mean()
         loss = self.beta_tf * l_tf
-        st = {"lat/tf_l1": l_tf}
+        st = {"lat/tf_l1": l_tf if self.dist == "l1" else (pred - tgt[j + 1]).abs().mean().detach()}
         for k, hk in zip(self.horizons, self.hheads):
             jk = next_pairs(out.cu1, T1, k)
-            l_k = (hk(out.z_full[jk]).float() - tgt[jk + k]).abs().mean()
+            l_k = self.dist_fn(hk(out.z_full[jk]).float(), tgt[jk + k]).mean()
             loss = loss + self.beta_h * l_k / len(self.horizons)
             st[f"lat/tf{k}_l1"] = l_k
         if self.rollout is not None:

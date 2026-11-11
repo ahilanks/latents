@@ -229,7 +229,9 @@ class Thinker:
             pos = torch.arange(qn[b] + ks[b] - 1, qn[b] + ks[b] - 1 + n_ans, device=x.device)
             preds.append(self.lat.head(zr[b][pos]).float())
             tgts.append(tgt[cu1[b] + qn[b]: cu1[b] + qn[b] + n_ans])
-        l_ans_lat = (torch.cat(preds) - torch.cat(tgts)).abs().mean()
+        P, T = torch.cat(preds), torch.cat(tgts)
+        l_ans_lat = self.lat.dist_fn(P, T).mean()
+        self._ans_l1 = (P - T).abs().mean().detach()
         # (b) the decoder reads the detached predicted latents: its loss updates the decoder only
         zc = torch.cat([torch.cat((zr[b][:qn[b]], zr[b][qn[b] + ks[b]:]), 0) for b in range(B)], 0).detach()
         with torch.no_grad():
@@ -271,7 +273,9 @@ class Thinker:
         ks = [t.shape[0] for t in tg]
         qb = [bytes([BOS]) + p["q"].encode() for p in probs]
         pred, ins, _ = self.thoughts(qb, ks, teacher=teach, p_true=p_true, return_inputs=True)
-        l_th = torch.cat([(a.float() - t).abs().mean(-1) for a, t in zip(pred, tg) if t.shape[0]]).mean()
+        l_th = torch.cat([self.lat.dist_fn(a.float(), t).mean(-1) for a, t in zip(pred, tg) if t.shape[0]]).mean()
+        with torch.no_grad():
+            l_th_l1 = torch.cat([(a.float() - t).abs().mean(-1) for a, t in zip(pred, tg) if t.shape[0]]).mean()
         # 3. answer: latent loss on its chunks (trunk) + decoder CE on stop-gradient latents (decoder only)
         ctx = [q + p["answer"].encode() for q, p in zip(qb, probs)]
         lg, l_ans_lat, lg_true = self._answer_pass_pure(ctx, [len(q) for q in qb], ins, dec_true=dec_true > 0)
@@ -298,6 +302,7 @@ class Thinker:
             ce_ans_true = ans_ce(lg_true)
             loss = loss + dec_true * (w_lm * ce_lm_true + ce_ans_true)
             extra |= {"lm_ce_true": ce_lm_true.detach(), "answer_ce_true": ce_ans_true.detach()}
-        return loss, {"answer_ce": ce_ans.detach(), "thought_l1": l_th.detach(), "answer_lat_l1": l_ans_lat.detach(),
+        return loss, {"answer_ce": ce_ans.detach(), "thought_l1": l_th_l1, "answer_lat_l1": self._ans_l1,
+                      "thought_loss": l_th.detach(), "answer_lat_loss": l_ans_lat.detach(),
                       "lm_ce": ce_lm.detach(), "lm_lat": l_lat.detach(), "mean_k": sum(ks) / len(ks), "p_true": p_true,
                       "_ce_ans": ce_ans} | extra

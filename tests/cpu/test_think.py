@@ -161,3 +161,19 @@ def test_decoder_on_true_latents_is_decoder_only():
     out = Thinker._true_src(src, tgt, torch.tensor([0, 3, 5]))
     assert torch.equal(out, torch.tensor([[2., 3.], [4., 5.], [0., 0.], [8., 9.], [0., 0.]]))
 
+
+
+def test_l2_distance_and_sigreg_options():
+    m, lat, mc = make_latent_only()
+    lat.dist = "l2"
+    lat.reg = "sigreg"
+    m.train()
+    th = Thinker(m, lat, mc)
+    rng = random.Random(8)
+    probs = [tasks.sample(rng, (2, 3)) for _ in range(3)]
+    loss, st = th.loss_pure(probs, p_true=1.0)
+    assert torch.isfinite(loss) and "answer_lat_loss" in st and "thought_l1" in st
+    loss.backward()
+    assert grads(m.backbone.encoder) > 0
+    p, t = torch.tensor([1.0, -2.0]), torch.zeros(2)
+    assert torch.equal(lat.dist_fn(p, t), torch.tensor([1.0, 4.0]))
