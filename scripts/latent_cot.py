@@ -162,6 +162,16 @@ class Model:
         return [bytes(o) for o in outs]
 
     @torch.no_grad()
+    def teacher_thoughts(self, q_bytes, cot_bytes):
+        """Diagnostic: the true chunk states of the written reasoning (encoder over Q + reasoning), used as thoughts.
+        High accuracy here means latents can carry the reasoning and only predicting them fails."""
+        x = self.tensor(q_bytes + cot_bytes)
+        with torch.autocast(**self.ac):
+            h, cu, bp = self.chunks(x)
+            idx = torch.nonzero(bp.boundary_mask).squeeze(1)
+            return h[idx[idx >= len(q_bytes)]]
+
+    @torch.no_grad()
     def cot_chunks(self, q_bytes, cot_bytes):
         x = self.tensor(q_bytes + cot_bytes)
         with torch.autocast(**self.ac):
@@ -179,7 +189,7 @@ class Model:
         return outer, inner
 
 
-def evaluate(run, ks, n, n_cot):
+def evaluate(run, ks, n, n_cot, out_name="latent_cot.json"):
     M = Model(run)
     probs = [json.loads(l) for l in open(ROOT / M.cfg.get("data_dir", "data/task_arith") / "test.jsonl")][:n]
     outer, inner = M.costs()
@@ -191,16 +201,24 @@ def evaluate(run, ks, n, n_cot):
         rows, ksz = [], []
         for p in probs:
             qb = bytes([BOS]) + p["q"].encode()
-            kk = M.cot_chunks(qb, p["cot"].encode()) if k == "oracle" else int(k)
+            if k == "teacher":
+                th = M.teacher_thoughts(qb, p["cot"].encode())
+                kk = th.shape[0]
+            else:
+                kk = M.cot_chunks(qb, p["cot"].encode()) if k == "oracle" else int(k)
+                th = M.thoughts(qb, kk)
             ksz.append(kk)
-            ans = M.answer_latent(qb, M.thoughts(qb, kk))
+            ans = M.answer_latent(qb, th)
             rows.append((p["steps"], ans == str(p["value"])))
         acc = sum(r for _, r in rows) / len(rows)
         name = "direct" if k == "0" else f"latent_k{k}"
         res["modes"][name] = dict(acc=acc, acc_by_steps=by(rows), mean_k=sum(ksz) / len(ksz),
                                   sequential_main_steps=sum(ksz) / len(ksz), mflop=sum(ksz) / len(ksz) * inner / 1e6)
         print(name, json.dumps(res["modes"][name]), flush=True)
-    # byte CoT
+    # byte CoT (skip with --n_cot 0)
+    if n_cot <= 0:
+        json.dump(res, open(Path(run) / out_name, "w"), indent=1)
+        return res
     sub = probs[:n_cot]
     rows, gen_b, gen_c = [], [], []
     for i in range(0, len(sub), 64):
@@ -218,20 +236,21 @@ def evaluate(run, ks, n, n_cot):
                                     gen_bytes=nb, sequential_decoder_steps=nb, sequential_main_steps=nc,
                                     mflop=(nb * outer + nc * inner) / 1e6)
     print("byte_cot", json.dumps(res["modes"]["byte_cot"]), flush=True)
-    json.dump(res, open(Path(run) / "latent_cot.json", "w"), indent=1)
+    json.dump(res, open(Path(run) / out_name, "w"), indent=1)
     return res
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("runs", nargs="+")
-    ap.add_argument("--k", default="0,2,4,8,16,oracle")
+    ap.add_argument("--k", default="0,2,4,8,16,oracle", help="also: teacher (true reasoning-chunk states as thoughts)")
     ap.add_argument("--n", type=int, default=1000)
     ap.add_argument("--n_cot", type=int, default=300)
     ap.add_argument("--name", default=None, help="label for the job queue's log file only")
     a = ap.parse_args()
+    ap_out = "latent_cot.json" if a.k == "0,2,4,8,16,oracle" else f"latent_cot_{a.k.replace(',', '_')}.json"
     for r in a.runs:
-        evaluate(r, a.k.split(","), a.n, a.n_cot)
+        evaluate(r, a.k.split(","), a.n, a.n_cot, out_name=ap_out)
 
 
 if __name__ == "__main__":
