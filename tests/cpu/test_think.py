@@ -177,3 +177,17 @@ def test_l2_distance_and_sigreg_options():
     assert grads(m.backbone.encoder) > 0
     p, t = torch.tensor([1.0, -2.0]), torch.zeros(2)
     assert torch.equal(lat.dist_fn(p, t), torch.tensor([1.0, 4.0]))
+
+
+def test_vicreg_corr_option():
+    m, lat, mc = make_latent_only()
+    lat.reg, lat.beta_cov = "vicreg_corr", 0.1
+    lat.reg_gamma = 1.0  # fixed floor, no calibration
+    m.train()
+    th = Thinker(m, lat, mc)
+    rng = random.Random(9)
+    probs = [tasks.sample(rng, (2, 3)) for _ in range(3)]
+    loss, st = th.loss_pure(probs, p_true=1.0)
+    assert torch.isfinite(loss) and "lat_reg_cov" in st and float(st["lat_participation"]) > 0
+    loss.backward()
+    assert grads(m.backbone.encoder) > 0

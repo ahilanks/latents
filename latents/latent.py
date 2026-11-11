@@ -98,7 +98,8 @@ class LatentObjective(nn.Module):
         self.hheads = nn.ModuleList([make_head(lcfg.get("head", "linear"), D1, D0, dev) for _ in self.horizons])
         # ladder knobs
         self.dist = lcfg.get("dist", "l1")  # l1 | l2 (squared error): the prediction distance of the TF losses
-        self.reg = lcfg.get("reg", "none")  # none | var | vicreg | sigreg
+        self.reg = lcfg.get("reg", "none")  # none | var | vicreg | vicreg_corr | sigreg
+        self.beta_cov = float(lcfg.get("beta_cov", 1.0))  # weight of the off-diagonal term (vicreg, vicreg_corr)
         self.reg_scope = lcfg.get("reg_scope", "within")  # within | batch
         self.beta_reg = float(lcfg.get("beta_reg", 1.0))
         self.reg_gamma = lcfg.get("reg_gamma", "auto")  # target std for var/vicreg, or auto-calibrated
@@ -203,10 +204,17 @@ class LatentObjective(nn.Module):
             return x.new_zeros(()), st
         st["lat/reg_gamma"] = torch.tensor(g)
         loss = F.relu(g - std).mean()
-        if self.reg == "vicreg":
-            cov = (x.T @ x) / max(x.shape[0] - 1, 1)
+        if self.reg in ("vicreg", "vicreg_corr"):
+            # vicreg: covariance; vicreg_corr: correlation (scale-free, Barlow-style decorrelation)
+            xs = x / std if self.reg == "vicreg_corr" else x
+            cov = (xs.T @ xs) / max(x.shape[0] - 1, 1)
             off = cov - torch.diag(torch.diag(cov))
-            loss = loss + off.pow(2).sum() / x.shape[-1]
+            l_cov = off.pow(2).sum() / x.shape[-1]
+            loss = loss + self.beta_cov * l_cov
+            st["lat/reg_cov"] = l_cov.detach()
+        with torch.no_grad():  # participation ratio of the (centred) chunk latents: effective dimensionality
+            ev = torch.linalg.eigvalsh((x.T @ x) / max(x.shape[0] - 1, 1)).clamp(min=0)
+            st["lat/participation"] = ev.sum() ** 2 / (ev.pow(2).sum() + 1e-12)
         return loss, st
 
     def cpc_loss(self, pred_all, tgt, cu):

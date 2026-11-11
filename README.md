@@ -21,6 +21,7 @@ L_TF = Σ_j ‖P(c_≤j) − sg(c̄_{j+1})‖₁        L_R = ‖P(c_≤j, ĉ_{j
   - No regularizer that ties back to the raw input (no reconstruction).
 - **Rules that follow from these:**
   - Only non-contrastive objectives.
+  - Always end-to-end: never freeze the encoder or any trunk part. Fix drift or partial collapse with regularization.
   - Nothing hard-coded (e.g. no task-aligned chunking).
   - The decoder gets its own loss, but its gradient never reaches the latents, encoder or trunk.
   - Train teacher-forced on real encodings only. The model "dreams" in its own rollouts only at inference.

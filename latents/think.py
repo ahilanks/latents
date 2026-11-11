@@ -253,7 +253,7 @@ class Thinker:
         valid = (torch.arange(L - 1, device=x.device)[None, :] < (lens[:, None] - 1)).float()
         ce_tok = F.cross_entropy(out.logits[:, :-1].float().flatten(0, 1), x[:, 1:].flatten(), reduction="none").view(B, L - 1)
         ce_lm = (ce_tok * valid).sum() / valid.sum()
-        l_lat, _ = self.lat.loss(self.m, out, x, step=step, total_steps=total_steps)
+        l_lat, st_lat = self.lat.loss(self.m, out, x, step=step, total_steps=total_steps)
         # thought targets and teacher inputs: the reasoning chunks of this forward
         with torch.no_grad():
             tgt = self.lat.targets(self.m, out, x).float()
@@ -290,7 +290,8 @@ class Thinker:
             return ce / n
         ce_ans = ans_ce(lg)
         loss = w_lm * (ce_lm + l_lat) + beta * l_th + gamma * l_ans_lat + ce_ans
-        extra = {}
+        extra = {k.replace("lat/", "lat_"): v.detach() for k, v in st_lat.items()
+                 if k in ("lat/reg", "lat/reg_cov", "lat/participation", "lat/reg_std")}
         if dec_true > 0:
             # the decoder reads the true next-chunk latents: full examples + answer (decoder-only gradient)
             bp0 = out.bpred[0]
