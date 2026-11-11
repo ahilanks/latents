@@ -316,3 +316,6 @@ gates and job files. ⚠️ R0 re-runs the hcD3 recipe first to confirm the refa
     The latent loss does not move the average. It helps on LAMBADA (15.7–16.4 vs 14.4–14.9), SciQ (+1) and WikiText BPB (1.32–1.33 vs 1.36–1.39).
   - **BPE:** best on ARC-e (43.4) and the average, but worst on SciQ (69.1) and much less robust to character noise: +2.25 BPB under the BLT noises vs ~1.6 for byte models.
   - **Latent-only trunks:** reach the H-Net N6·T9 baseline's average, though not the joint models' BPB. Their predicted latents are as good a next-word probe as the joint model's (M2 42.5–45.0 vs 43.8–45.6; floor 13.2). The prediction-error boundaries (M2) give the best morpheme F1 of any model: 25.1–25.4 vs 13–17 for the joint and fixed-chunk models.
+- **07:42 ❌ 10B pair: the joint latent loss hurts with more data.** `side-f10-latent-s0` reached **1.0458** vs `side-f10-plain-s0` **1.0318** (+0.014 worse) with 1.17× the FLOPs. The gap by step went −0.028 (4k), +0.001 (8k), +0.004 (12k), +0.008 (20k), +0.010 (24k), +0.013 (32k), +0.015 (end). One seed, but monotonic.
+  - Across scales: −0.069 at 0.6B, −0.017 at 3B, **+0.014 at 10B**. The latent auxiliary loss accelerates early training and then costs quality.
+  - The no-latent H-Net at 10B (1.0318) beats the 3B BPE baseline (1.0815).
