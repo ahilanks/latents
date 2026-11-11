@@ -235,10 +235,12 @@ class Scorer:
     def bos(self):
         return [self.enc.eot_token] if self.bpe else [BOS]
 
-    def continuation(self, pairs, max_tokens=65536, max_bs=256):
+    def continuation(self, pairs, max_tokens=None, max_bs=256):
         """pairs: [(ctx_bytes, cont_bytes)] -> [(sum log p of cont in nats, n_bytes(cont), greedy_exact)].
-        Sequences are sorted by length and packed into batches of <= max_tokens padded positions."""
+        Sequences are sorted by length and packed into batches of <= max_tokens padded positions
+        (8k for BPE: a 50k-vocab log-softmax over 65k positions alone would take ~26 GB)."""
         torch = self.torch
+        max_tokens = max_tokens or (8192 if self.bpe else 65536)
         seqs, spans = [], []
         for ctx, cont in pairs:
             c, t = self.tokens(ctx), self.tokens(cont)
