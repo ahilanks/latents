@@ -68,6 +68,8 @@ def main():
     ap.add_argument("--gamma", type=float, default=1.0)
     ap.add_argument("--w_lm", type=float, default=1.0)
     ap.add_argument("--dec_true", type=float, default=0.0, help="weight of the decoder's CE when reading the true next-chunk latents")
+    ap.add_argument("--thought_grad", action="store_true",
+                    help="thought/answer latent losses also train the encoder through the teacher thought inputs")
     ap.add_argument("--lat", action="append", default=[], help="latent-config override key=value (repeatable)")
     ap.add_argument("--save_every", type=int, default=0, help="also save runs/<name>-s<step>/final.pt every N steps")
     a = ap.parse_args()
@@ -106,7 +108,8 @@ def main():
         with torch.autocast(**ac):
             if a.mode == "pure":
                 loss, st = th.loss_pure(probs, p_true=p_true, beta=a.beta, gamma=a.gamma, w_lm=a.w_lm,
-                                        step=step, total_steps=a.steps, dec_true=a.dec_true)
+                                        step=step, total_steps=a.steps, dec_true=a.dec_true,
+                                        thought_grad=a.thought_grad)
             else:
                 loss, st = th.loss(probs, beta=a.beta)
         if not torch.isfinite(loss):

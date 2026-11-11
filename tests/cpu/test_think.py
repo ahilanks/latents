@@ -206,3 +206,19 @@ def test_padding_never_changes_the_losses():
         out.append(st)
     for k in ("answer_ce", "thought_l1", "answer_lat_l1", "lm_ce", "lm_lat", "answer_ce_true", "lm_ce_true"):
         assert abs(float(out[0][k]) - float(out[1][k])) < 1e-4, (k, float(out[0][k]), float(out[1][k]))
+
+
+def test_thought_grad_adds_encoder_gradient_through_thoughts():
+    m, lat, mc = make_latent_only()
+    m.train()
+    th = Thinker(m, lat, mc)
+    probs = [tasks.sample(random.Random(11), (2, 3)) for _ in range(3)]
+    gs = []
+    for tg in (False, True):
+        m.zero_grad(set_to_none=True)
+        lat.zero_grad(set_to_none=True)
+        loss, st = th.loss_pure(probs, p_true=1.0, beta=1.0, gamma=0.0, w_lm=0.0, thought_grad=tg)
+        (loss - st["_ce_ans"]).backward()  # thought latent loss only (answer CE trains the decoder only)
+        gs.append(grads(m.backbone.encoder))
+    # the question's chunks always carry encoder gradient; thought_grad adds the path through the thought inputs
+    assert gs[1] > gs[0] > 0, gs

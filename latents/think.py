@@ -242,8 +242,11 @@ class Thinker:
         lg_true = self._decode(x, h, mask, prob, sel, cu, cu1, self._true_src(src, tgt, cu1)) if dec_true else None
         return lg, l_ans_lat, lg_true
 
-    def loss_pure(self, probs, p_true=0.0, beta=1.0, gamma=1.0, w_lm=1.0, step=0, total_steps=1, dec_true=0.0):
-        """dec_true > 0: the decoder also learns to read the TRUE next-chunk latents (target encoder; detached) on the
+    def loss_pure(self, probs, p_true=0.0, beta=1.0, gamma=1.0, w_lm=1.0, step=0, total_steps=1, dec_true=0.0,
+                  thought_grad=False):
+        """thought_grad: the teacher thought inputs (true reasoning-chunk encodings) keep their gradient, so the thought
+        and answer latent losses also train the encoder through them (end to end; still no decoder gradient).
+        dec_true > 0: the decoder also learns to read the TRUE next-chunk latents (target encoder; detached) on the
         full examples and on the answer -- the observation model trained on real encodings, as the trunk is."""
         B = len(probs)
         full = [bytes([BOS]) + (p["q"] + p["cot"] + p["answer"]).encode() for p in probs]
@@ -263,7 +266,6 @@ class Thinker:
             tgt = self.lat.targets(self.m, out, x).float()
             if getattr(self.lat, "target_norm", None) == "ln":
                 tgt = F.layer_norm(tgt, tgt.shape[-1:])
-            chunks = out.chunks.detach()
             mv = out.bpred[0].boundary_mask.view(B, L)
             off = torch.cat((torch.zeros(1, device=x.device, dtype=torch.long), mv.sum(1).cumsum(0)))
             tg, teach = [], []
@@ -272,7 +274,9 @@ class Thinker:
                 r = q + len(p["cot"].encode())
                 qn_, k = int(mv[b, :q].sum()), int(mv[b, q:r].sum())
                 tg.append(tgt[off[b] + qn_: off[b] + qn_ + k])
-                teach.append(chunks[off[b] + qn_: off[b] + qn_ + k])
+                teach.append((off[b] + qn_, k))
+        chunks = out.chunks if thought_grad else out.chunks.detach()
+        teach = [chunks[o: o + k] for o, k in teach]
         # 2. thoughts, trained only by latent targets
         ks = [t.shape[0] for t in tg]
         qb = [bytes([BOS]) + p["q"].encode() for p in probs]
