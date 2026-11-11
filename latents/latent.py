@@ -212,8 +212,10 @@ class LatentObjective(nn.Module):
             l_cov = off.pow(2).sum() / x.shape[-1]
             loss = loss + self.beta_cov * l_cov
             st["lat/reg_cov"] = l_cov.detach()
-        with torch.no_grad():  # participation ratio of the (centred) chunk latents: effective dimensionality
-            ev = torch.linalg.eigvalsh((x.T @ x) / max(x.shape[0] - 1, 1)).clamp(min=0)
+        with torch.no_grad(), torch.autocast(device_type=x.device.type, enabled=False):
+            # participation ratio of the (centred) chunk latents: effective dimensionality
+            xf = x.detach().float()
+            ev = torch.linalg.eigvalsh((xf.T @ xf) / max(xf.shape[0] - 1, 1)).clamp(min=0)
             st["lat/participation"] = ev.sum() ** 2 / (ev.pow(2).sum() + 1e-12)
         return loss, st
 
