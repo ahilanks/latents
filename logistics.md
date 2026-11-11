@@ -319,3 +319,22 @@ gates and job files. ⚠️ R0 re-runs the hcD3 recipe first to confirm the refa
 - **07:42 ❌ 10B pair: the joint latent loss hurts with more data.** `side-f10-latent-s0` reached **1.0458** vs `side-f10-plain-s0` **1.0318** (+0.014 worse) with 1.17× the FLOPs. The gap by step went −0.028 (4k), +0.001 (8k), +0.004 (12k), +0.008 (20k), +0.010 (24k), +0.013 (32k), +0.015 (end). One seed, but monotonic.
   - Across scales: −0.069 at 0.6B, −0.017 at 3B, **+0.014 at 10B**. The latent auxiliary loss accelerates early training and then costs quality.
   - The no-latent H-Net at 10B (1.0318) beats the 3B BPE baseline (1.0815).
+- **07:45 CoT study, phase 1 of the latent-reasoning plan.** Synthetic arithmetic (2–6 steps in training, 2–8 at test, answers mod 100, chance ≈1%). All runs are fine-tuned from H100 3B seed-1 checkpoints. Scripts: `latents/think.py`, `scripts/think_train.py`, `scripts/latent_cot.py`.
+
+  | run | method | acc | 2–6 steps | 7 | 8 | seq. steps | MFLOP |
+  |---|---|---|---|---|---|---|---|
+  | B1 normal H-Net, written CoT | byte CoT | **94.3%** | 98–100 | 91 | 74 | 70 bytes + 18 main | 1644 |
+  | B2 normal H-Net, direct | direct | 3.2% | 1–5 | 3 | 1 | 0 | 0 |
+  | L1 latent H-Net, written CoT | byte CoT | **77.0%** | 95–100 | 42 | 2 | 68 + 11 | 1297 |
+  | L1 | zero-shot thoughts (2–16, oracle 10.8) | 0–0.8% | | | | 2–16 main | 97–778 |
+  | L2 thoughts from base (128k problems, 67 min) | thoughts (0–37) | 2.6–3.3% | | | | ≤37 main | ≤1788 |
+  | L2b thoughts from L1 (64k problems) | thoughts | 1.5–2.8% | | | | | |
+
+  - **Reasoning in latents failed:** trained thoughts sit at the no-reasoning level. L2 and L2b also lost written CoT (0%).
+  - **Teacher-thoughts diagnostic** (true reasoning-chunk states fed as thoughts): L1 0.2%, L2 3.5% (= its no-thought 3.5%), L2b 3.5%. The answer path learned to *ignore* thoughts, so prediction error is not the whole story. Likely cause: byte CoT works because the byte decoder copies the last computed value from its own byte stream ("…=86." → "#### 86"), so the main net never had to carry the answer. Latent reasoning needs a latent → answer pathway that nothing ever trained.
+  - **Side finding:** the latent-loss model's written CoT generalizes worse to longer chains: 42% vs 91% at 7 steps, 2% vs 74% at 8. Both are near-perfect within the training range.
+  - **Next, simplest first:**
+    1. Train answering from *true* reasoning latents with the CoT bytes removed (validates the read path).
+    2. Then scheduled sampling from true to predicted thoughts.
+    3. And/or make each thought decodable to its chunk's bytes, so it must carry the value.
+    4. Fewer, more abstract thoughts (one per reasoning step).
