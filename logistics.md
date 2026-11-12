@@ -716,3 +716,18 @@ gates and job files. ⚠️ R0 re-runs the hcD3 recipe first to confirm the refa
   - Reading the answer only needs the last thought, and predicting each intermediate chunk is the hard part of the loss, so the cuts drift off the early steps and merge them; the ratio loss fixes the count (globally, or per 64 bytes), not the places. With cuts held, every step stays a prediction target and the model learns to compute.
   - With 32-byte windows no stretch can go uncut: the cuts stay step-aligned (they move to each step's final "."), ~10 per problem. That run had 3000 steps (reading 73%, computing at chance), fewer than the cuts-held version needed (12% at 3000, 97% at 6000).
   - **Launched: `R4n6-3B-s{0,1}-think-e2e32-long`** — end to end, 32-byte windowed ratio, 9000 steps, both seeds, sharing the GPUs with the two cuts-held replicates.
+- **14:40 (2026-11-12) Final runs of the session: replicates of the 9000-step cuts-held stage, and the end-to-end version at the same length.**
+
+  | 9000 × 256 thought stage, 2000 test problems (2–8 steps) | reading | all thoughts own | by steps 2–8 (all own) | independent check (`verify_own.py`) |
+  |---|---|---|---|---|
+  | cuts held, pretrain s0, think seed 0 (`R4n6-3B-s0-think-fix-long`) | 99.9 | **98.5** | 100 99 100 99 99 100 93 | 98.7 |
+  | cuts held, pretrain s0, think seed 1 (`…-fix-long-t1`) | 100.0 | **97.4** | 100 99 100 99 98 99 88 | 97.7 |
+  | cuts held, pretrain s1, think seed 1 (`R4n6-3B-s1-think-fix-long`) | 99.6 | 11.8 (units 72%, tens 15%) | 11 12 11 14 11 12 13 | |
+  | **end to end**, 32-byte windowed ratio, pretrain s0 (`…-s0-think-e2e32-long`) | 13.1 | 6.3 | | |
+  | **end to end**, 32-byte windowed ratio, pretrain s1 (`…-s1-think-e2e32-long`) | 48.4 | 3.6 | | |
+  | normal H-Net, written CoT (reference) | | 94.6 | 100 100 100 100 100 93 71 | |
+
+  - **Cuts held:** reproducible on the seed-0 pretrain across thought-stage seeds (98.5 / 97.4%; at step 6000: 96.8 / 60.5%, so the carry is learned at different times). On the seed-1 pretrain it had not happened by step 9000 (10.1% at 6000, 11.8% at 9000) and that run's input-head loss rose through training (0.34 at step 1000 → 1.08).
+  - **End to end is not solved.** With the 32-byte window the reasoning is not merged on s0 (10 thoughts per problem) but the cuts never settle: 141–166% of them move between checkpoints 3000 steps apart (`y=48. o|=48+13=61. |p=61-4=57.| |u=…` → `y=48. o=|48+13=61. p|=…` → `y=48. o=|48+13=61. |p=|61-4=57. |u=|…`), and reading is not learned. On s1 the cuts move the same way and the first steps end up merged (5.9 thoughts, `y=48. o=48+13=61. |p=61-4=57. |u=57-56=1.`).
+  - **Where the session ends.** (1) Learned word-level cuts from the latent objective alone: solid (0.6B and 3B, two seeds). (2) With those cuts held, ~one silent thought per written step solves whole problems at 97–98% on one pretrained model (above written CoT, and to 8–9 steps when trained on 2–6); needs ~6000–9000 thought-training steps; not yet on the other pretrained model. (3) Open: cuts that keep learning during reasoning training without leaving the steps (they merge or wander; `scripts/cut_drift.py` measures it).
+  - All runs uploaded to HF (`runs/<name>`). Pod stopped after this commit.
