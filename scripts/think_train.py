@@ -67,6 +67,8 @@ def main():
     ap.add_argument("--log_every", type=int, default=25)
     ap.add_argument("--data_dir", default="data/task_arith")
     ap.add_argument("--train_steps", default="2,6", help="min,max reasoning steps of the training problems")
+    ap.add_argument("--spaced", action="store_true",
+                    help="spaced task format (a space between every piece); pass --data_dir data/task_arith_sp for the evals")
     ap.add_argument("--mode", choices=["pure", "e2e", "coconut"], default="pure")
     ap.add_argument("--max_stage", type=int, default=7, help="coconut: the last stage replaces this many written steps")
     ap.add_argument("--stage_steps", type=int, default=400, help="coconut: optimizer steps per stage (stage 0 first)")
@@ -119,7 +121,7 @@ def main():
         f = (step + 1) / w if step < w else 0.5 * (1 + math.cos(math.pi * (step - w) / max(1, a.steps - w)))
         for g, lr in zip(opt.param_groups, base_lrs):
             g["lr"] = lr * f
-        probs = [tasks.sample(rng, steps=train_steps) for _ in range(a.batch)]
+        probs = [tasks.sample(rng, steps=train_steps, spaced=a.spaced) for _ in range(a.batch)]
         n_seen += len(probs)
         if a.teacher_only:
             p_true = 1.0

@@ -671,3 +671,34 @@ gates and job files. ⚠️ R0 re-runs the hcD3 recipe first to confirm the refa
   - Practice stage on seed 0 (cuts held) at step 800: all own still 11.0%, units 98%, tens 11%.
   - Chunks on the arithmetic text (pretrained router): `e=97. s | =97+33=30. z | = | 30+64=94.\n`, i.e. one chunk per written step, ending on the next step's first letter.
   - **Running:** `R4n6-3B-s0-practice-fix` and `R4n6-3B-s0-think-fix-long` (9000 steps) on GPU 0, both cuts held; **`R4n6-3B-s1-think-e2e-long` on GPU 1: end to end** (second head, per-byte losses, `ratio_window=64`, 9000 steps).
+- **09:55 (2026-11-12) Spaced-format test (user).** The same problems written with a space between every piece (`latents/tasks.py --spaced`, `data/task_arith_sp`, same 2000 test problems; `think_train.py --spaced`). The pretrained router (R4n6-3B-s0) cuts it at nearly every piece: `y =| 4|8 .| o| =| 4|8 +| 1|3 =| 6|1 .|…` — 6.7 thoughts per written step (compact format 1.02), 40 per problem, one cut per 2.5 bytes; a number's tens digit is a firing byte and its units digit falls in the next chunk.
+  - Practice stage on the compact format, cuts held (`R4n6-3B-s0-practice-fix`): all own 11.0% (step 800), 12.8% (step 1600), tens digit 11–13% throughout; stopped at step ~2000 to make room.
+  - Launched: `R4n6-3B-s0-think-sp-fix` (cuts held, labelled not end to end) and `R4n6-3B-s0-think-sp-e2e` (end to end, `ratio_window=64`; the ratio loss pulls the cut rate from 0.41 to 0.19 within 50 steps, ~15 thoughts per problem). Stage A, 3000 × 256, second head, per-byte losses. Step parsing made format-independent (`step_spans`).
+- **11:00 (2026-11-12) Spaced-format test: results** (seed-0 3B word-cut model, stage A 3000 × 256, second head, per-byte losses; data `data/task_arith_sp`).
+
+  | | thoughts per problem | reading (m=0) | smallest leak-free m (≈2.8 own thoughts: the final number) | whole last step (≈8 own thoughts) | all own |
+  |---|---|---|---|---|---|
+  | compact format, cuts held (`-think-fix`) | 6.1 | 100.0 | 12.2 (tens 14 / units 85) | 11.7 | 11.2 |
+  | **spaced, cuts held (`-think-sp-fix`)** | 40.3 | 99.1 | **30.9** (tens 35 / units 66) | 5.9 | 2.0 |
+  | spaced, end to end (`-think-sp-e2e`, `ratio_window=64`) | 13.0 | 10.9 | 3–6 | 3.1 | 2.9 |
+
+  - Spaced, cuts held: m=1 95.5% and m=2 79.2% are not leak-free (drop control 51% at m=1: the final number's digits are still in the given thoughts); m=3 29.8%, m=4 11.2%, m=8 6.9%.
+  - More thoughts per step help the tens digit (14 → 35% when only the final number is its own) but the chain of own thoughts drifts within one step: cos to target 0.95 (1st own thought), 0.81 (5th), 0.57 (9th), 0.45 (13th); teacher-forced L1 0.32–0.56 on targets of mean |x| ≈ 0.85. So the limit is the precision of each predicted thought in this latent space (pretraining tf/copy 0.69; fixed-chunk L2 model: thought L1 0.36 on std 3.2 targets, cos 0.99 for the first five own thoughts), and with ~8 thoughts per step the errors compound.
+  - Spaced, end to end: the ratio loss cut the rate from 0.41 to 0.19 within 50 steps, the cuts no longer follow the pieces, and reading was not learned (10.9%).
+  - Longer stage A on the compact format, cuts held, at its 3000-of-9000 checkpoint: one own thought 17.8% (tens 24%), all own 12.2%.
+- **11:35 (2026-11-12) ✅✅ Whole-chain latent reasoning on learned word-level cuts: 98.5%** (`R4n6-3B-s0-think-fix-long` = the cuts-held stage A trained 3× longer, 9000 × 256; second head, per-byte losses; **cuts held as pretrained, so NOT end to end**; one seed, replicates running).
+
+  | 2000 test problems, 2–8 steps | overall | by steps 2–8 | thoughts or bytes per problem |
+  |---|---|---|---|
+  | reading (true thoughts) | 99.9 | 100 100 100 100 100 100 100 | 6.1 thoughts |
+  | 1 / 2 / 3 steps computed | 99.4 / 99.1 / 98.7 | | |
+  | **all thoughts own** | **98.5** | **100 99 100 99 99 100 93** | 6.1 thoughts |
+  | drop control (no thoughts) | 1.4 | | |
+  | normal H-Net, written CoT | 94.6 | 100 100 100 100 100 93 71 | ~70 bytes + 18 main steps |
+  | fixed 4-byte latent, best run (`coconut-anchor-const-l2`) | 63.0 | 98 94 91 81 74 3 1 | 15.6 thoughts |
+
+  - **Independent check** (`scripts/verify_own.py`: the question encoded alone, thought count = written steps + 1 read off the question, no reasoning or answer bytes anywhere): **98.7%** (100 100 100 99 100 99 94). One thought fewer 2.3%; one more 98.8%; none 1.4%.
+  - **Training time was the limit.** Same run, all own: 12.2% at step 3000 (tens digit 14%, units 87%), 96.8% at 6000 (98 / 98), 98.5% at 9000. The carry is learned between 3000 and 6000 steps.
+  - **Length** (2–12-step set, trained on 2–6): reading 100% at every length; all own 100 99 99 99 99 98 96 66 13 4 3. Holds two to three steps beyond training (the fixed-chunk model broke at 7).
+  - **End to end, same length (`R4n6-3B-s1-think-e2e-long`, `ratio_window=64`, 9000 steps):** thoughts held (4–8 per problem), reading 78.1%, all own 3.1% (units 27%, tens 10%). Not solved end to end.
+  - Launched two replicates of the 9000-step cuts-held run: `R4n6-3B-s1-think-fix-long` (pretrain s1, think seed 1) and `R4n6-3B-s0-think-fix-long-t1` (pretrain s0, think seed 1).

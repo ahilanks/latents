@@ -24,46 +24,50 @@ OPS = ("+", "-", "*")
 NAMES = "abcdefghijklmnopqrstuvwxyz"
 
 
-def problem(rng, steps):
+def problem(rng, steps, spaced=False):
+    """spaced: the same problem written with a space between every piece ("b = 17 + 25 = 42 ."), so a model that cuts
+    at word starts gets several chunks per step instead of one. The random draws are identical in both formats."""
     names = rng.sample(NAMES, steps + 1)
     v = rng.randrange(100)
-    q = [f"{names[0]}={v}"]
-    cot = [f"{names[0]}={v}."]
+    sp = " " if spaced else ""
+    q = [f"{names[0]}{sp}={sp}{v}"]
+    cot = [f"{names[0]}{sp}={sp}{v}{sp}."]
     for i in range(1, steps + 1):
         op = rng.choice(OPS)
         n = rng.randrange(2, 10) if op == "*" else rng.randrange(1, 100)
         prev = v
         v = (prev + n) % 100 if op == "+" else (prev - n) % 100 if op == "-" else (prev * n) % 100
-        q.append(f"{names[i]}={names[i - 1]}{op}{n}")
-        cot.append(f"{names[i]}={prev}{op}{n}={v}.")
-    return dict(q="Q: " + "; ".join(q) + f"; {names[-1]}=?\n", cot=" ".join(cot) + "\n", answer=f"#### {v}\n",
-                value=v, steps=steps)
+        q.append(f"{names[i]}{sp}={sp}{names[i - 1]}{sp}{op}{sp}{n}")
+        cot.append(f"{names[i]}{sp}={sp}{prev}{sp}{op}{sp}{n}{sp}={sp}{v}{sp}.")
+    return dict(q="Q: " + f"{sp}; ".join(q) + f"{sp}; {names[-1]}{sp}={sp}?\n", cot=" ".join(cot) + "\n",
+                answer=f"#### {v}\n", value=v, steps=steps)
 
 
 def document(p, cot=True):
     return (p["q"] + (p["cot"] if cot else "") + p["answer"]).encode()
 
 
-def sample(rng, steps=(2, 6)):
+def sample(rng, steps=(2, 6), spaced=False):
     """One training problem (for trainers that need the parts apart, e.g. scripts/think_train.py)."""
-    return problem(rng, rng.randint(*steps))
+    return problem(rng, rng.randint(*steps), spaced)
 
 
-def write(out, train_bytes=2e8, val_bytes=2e6, n_test=2000, train_steps=(2, 6), test_steps=(2, 8), seed=0, cot=True):
+def write(out, train_bytes=2e8, val_bytes=2e6, n_test=2000, train_steps=(2, 6), test_steps=(2, 8), seed=0, cot=True,
+          spaced=False):
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
     rng = random.Random(seed)
     for split, nbytes in (("train", train_bytes), ("val", val_bytes)):
         buf, n = [], 0
         while n < nbytes:
-            d = bytes([SEP]) + document(problem(rng, rng.randint(*train_steps)), cot)
+            d = bytes([SEP]) + document(problem(rng, rng.randint(*train_steps), spaced), cot)
             buf.append(d)
             n += len(d)
         np.frombuffer(b"".join(buf), dtype=np.uint8).tofile(out / f"{split}.u8")
     trng = random.Random(seed + 1)
     with open(out / "test.jsonl", "w") as f:
         for i in range(n_test):
-            f.write(json.dumps(problem(trng, test_steps[0] + i % (test_steps[1] - test_steps[0] + 1))) + "\n")
+            f.write(json.dumps(problem(trng, test_steps[0] + i % (test_steps[1] - test_steps[0] + 1), spaced)) + "\n")
     print(f"wrote {out}: train {train_bytes:.2g} bytes, val {val_bytes:.2g}, {n_test} test problems")
 
 
@@ -74,8 +78,10 @@ def main():
     ap.add_argument("--n_test", type=int, default=2000)
     ap.add_argument("--no_cot", action="store_true")
     ap.add_argument("--test_steps", default="2,8", help="min,max steps of the test problems (e.g. 2,12 for a long test set)")
+    ap.add_argument("--spaced", action="store_true", help="write every piece separated by a space (same problems)")
     a = ap.parse_args()
-    write(a.out, a.train_bytes, n_test=a.n_test, cot=not a.no_cot, test_steps=tuple(int(v) for v in a.test_steps.split(",")))
+    write(a.out, a.train_bytes, n_test=a.n_test, cot=not a.no_cot, test_steps=tuple(int(v) for v in a.test_steps.split(",")),
+          spaced=a.spaced)
 
 
 if __name__ == "__main__":

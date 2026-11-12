@@ -49,12 +49,13 @@ M_LIST = [0, 1, 2, 3, 4, 5, 6, 8, 10, 12, 16, 20, "all"]
 
 
 def step_spans(cot):
-    """Per written step (the restated assignment first): (start, value start, value end, value), offsets in cot."""
-    out, i = [], 0
-    for tok in cot.rstrip("\n").split(" "):
-        eq = tok.rfind("=")
-        out.append((i, i + eq + 1, i + len(tok) - 1, int(tok[eq + 1:-1])))
-        i += len(tok) + 1
+    """Per written step (the restated assignment first): (start, value start, value end, value), offsets in cot.
+    Works for both task formats ("b=17+25=42." and "b = 17 + 25 = 42 .")."""
+    import re
+    out = []
+    for m in re.finditer(r"[a-z] ?=[^.]*\.", cot):
+        v = re.search(r"(\d+) ?\.$", m.group())
+        out.append((m.start(), m.start() + v.start(1), m.start() + v.end(1), int(v.group(1))))
     return out
 
 

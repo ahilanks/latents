@@ -172,3 +172,37 @@ def test_cut_from_keeps_the_pretrained_cuts(tmp_path):
         for prm in m.backbone.encoder.parameters():
             prm.add_(0.05 * torch.randn_like(prm))
     assert th.full(probs()).k == k0
+
+
+def test_step_parsing_both_formats_and_spaced_task_runs():
+    import think_withhold as W
+    from latents.think_lc import step_spans
+
+    def old_spans(cot):  # the original, space-split parser of the compact format
+        out, i = [], 0
+        for tok in cot.rstrip("\n").split(" "):
+            eq = tok.rfind("=")
+            out.append((i, i + eq + 1, i + len(tok) - 1, int(tok[eq + 1:-1])))
+            i += len(tok) + 1
+        return out
+    for seed in range(20):
+        a = tasks.problem(random.Random(seed), 2 + seed % 6)
+        b = tasks.problem(random.Random(seed), 2 + seed % 6, spaced=True)
+        assert step_spans(a["cot"]) == old_spans(a["cot"]) == W.step_spans(a["cot"])
+        sa, sb = step_spans(a["cot"]), step_spans(b["cot"])
+        assert [s[3] for s in sa] == [s[3] for s in sb] and a["value"] == b["value"] == sb[-1][3]
+        for st, vs, ve, v in sb:
+            assert b["cot"][vs:ve] == str(v) and b["cot"][st].isalpha()
+        assert a["q"].replace(" ", "") == b["q"].replace(" ", "")
+    m, lat, mc = make(dict(target_local=True, loss_weight="len", in_head=True))
+    th = make_thinker(m, lat, mc)
+    P = [tasks.problem(random.Random(s), 2 + s % 3, spaced=True) for s in range(3)]
+    loss, st = th.loss_pure(P, dec_true=1.0, step=5, total_steps=10)
+    assert torch.isfinite(loss)
+    loss, st = th.loss_coconut(P, [1, 2, 9], anchor_w=1.0, dec_true=1.0)
+    assert torch.isfinite(loss) and st["mean_thoughts"] > 0
+    m.eval()
+    with torch.no_grad():
+        ex = W.prepare(th, P)
+        s_ = W.settings(ex[0])
+        assert s_["steps=1"] is not None and s_["leakfree"] >= 1

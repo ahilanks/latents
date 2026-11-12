@@ -27,12 +27,13 @@ from latents.think import BOS, Thinker
 
 
 def step_spans(cot):
-    """Per written step (the restated assignment first): (start, value start, value end, value), offsets in cot."""
-    out, i = [], 0
-    for tok in cot.rstrip("\n").split(" "):
-        eq = tok.rfind("=")
-        out.append((i, i + eq + 1, i + len(tok) - 1, int(tok[eq + 1:-1])))
-        i += len(tok) + 1
+    """Per written step (the restated assignment first): (start, value start, value end, value), offsets in cot.
+    Works for both task formats ("b=17+25=42." and "b = 17 + 25 = 42 .")."""
+    import re
+    out = []
+    for m in re.finditer(r"[a-z] ?=[^.]*\.", cot):
+        v = re.search(r"(\d+) ?\.$", m.group())
+        out.append((m.start(), m.start() + v.start(1), m.start() + v.end(1), int(v.group(1))))
     return out
 
 
@@ -281,10 +282,10 @@ class LCThinker(Thinker):
         ce_lm, l_lat, l_ratio, tgt, valid, _ = self.base_terms(f, step, total_steps)
         tails, n_th = [], []
         for b, (p, s) in enumerate(zip(probs, stages)):
-            toks = self.cot_steps(p)
-            ks_ = min(s, len(toks))
-            rest = (" ".join(toks[ks_:]) + "\n") if ks_ < len(toks) else ""
-            removed = len(p["cot"]) - len(rest)
+            sp_ = step_spans(p["cot"])
+            ks_ = min(s, len(sp_))
+            removed = sp_[ks_][0] if ks_ < len(sp_) else len(p["cot"])  # the first ks_ written steps are replaced
+            rest = p["cot"][removed:]
             n_th.append(int(f.mv[b, f.q[b]: f.q[b] + removed].sum()))
             tails.append(rest.encode() + p["answer"].encode())
         # own thoughts, one after another, from the question's chunks (the same chunks as in the full example)
