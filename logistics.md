@@ -702,3 +702,17 @@ gates and job files. ⚠️ R0 re-runs the hcD3 recipe first to confirm the refa
   - **Length** (2–12-step set, trained on 2–6): reading 100% at every length; all own 100 99 99 99 99 98 96 66 13 4 3. Holds two to three steps beyond training (the fixed-chunk model broke at 7).
   - **End to end, same length (`R4n6-3B-s1-think-e2e-long`, `ratio_window=64`, 9000 steps):** thoughts held (4–8 per problem), reading 78.1%, all own 3.1% (units 27%, tens 10%). Not solved end to end.
   - Launched two replicates of the 9000-step cuts-held run: `R4n6-3B-s1-think-fix-long` (pretrain s1, think seed 1) and `R4n6-3B-s0-think-fix-long-t1` (pretrain s0, think seed 1).
+- **11:50 (2026-11-12) Why the end-to-end reasoning stage fails: the cuts leave the reasoning steps** (`scripts/cut_drift.py`: the model's own cuts on 500 test problems' reasoning, forced boundaries excluded; reference = the pretrained model).
+
+  | checkpoint (seed 1) | thoughts per problem | cuts on a step's first letter | same cuts as pretrained (F1) | example |
+  |---|---|---|---|---|
+  | pretrained | 6.4 | 0.92 | 1.00 | `y=48. o\|=48+13=61. p\|=61-4=57. u\|=57-56=1.` |
+  | plain end to end, 3000 steps (`-think-in`) | 1.3 | 0 | 0 | `y=48. o=48+13=61. p=61-4=57. u=57-56=1.` (all merged) |
+  | 64-byte windowed ratio, step 3000 | 8.7 | 0.42 | 0.50 | `y=48. \|o=48+13=61. \|p=61-4=57. \|u\|=57-56=1.` |
+  | … step 6000 | 8.0 | 0.43 | 0.49 | `y=48. o=48+13=61. \|p\|=61-4=57. \|u\|=57-56=1.` |
+  | … step 9000 | 6.1 | 0.46 | 0.44 | `y=48. o=48+13=61. p=61-4=57. \|u\|=57-56=1.` (early steps merged) |
+  | 32-byte windowed ratio, 3000 steps (`-think-inw`) | 9.7 | 0.00 | 0.02 | `y=48. \|o=48+13=61.\| \|p=\|61-4=57.\| u=57-56=1.\|` (cuts on each step's final ".") |
+
+  - Reading the answer only needs the last thought, and predicting each intermediate chunk is the hard part of the loss, so the cuts drift off the early steps and merge them; the ratio loss fixes the count (globally, or per 64 bytes), not the places. With cuts held, every step stays a prediction target and the model learns to compute.
+  - With 32-byte windows no stretch can go uncut: the cuts stay step-aligned (they move to each step's final "."), ~10 per problem. That run had 3000 steps (reading 73%, computing at chance), fewer than the cuts-held version needed (12% at 3000, 97% at 6000).
+  - **Launched: `R4n6-3B-s{0,1}-think-e2e32-long`** — end to end, 32-byte windowed ratio, 9000 steps, both seeds, sharing the GPUs with the two cuts-held replicates.
