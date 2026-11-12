@@ -1,0 +1,12 @@
+# Step 3b: rollout during pretraining, end to end. Every chunk is a starting point; the model feeds its own predicted
+# next input back (second head) and is graded against the real next chunks, k steps ahead. Horizon schedule:
+# 2 steps for the first third of training, then 4, then 8. Gradients flow everywhere (no detaching).
+# One change vs m1_inhead. Micro-batch 4 so the 8-step passes fit in memory (same batch size, more accumulation).
+base: next/m1_inhead.yaml
+latent:
+  beta_r: 1.0
+  rollout_feed: in_head
+  rollout_predictor_only: false
+  rollout_schedule: [[0.0, 2], [0.34, 4], [0.67, 8]]
+train:
+  micro_batch: 4

@@ -1,0 +1,7 @@
+# Step 3a: also train the second head during pretraining (it predicts the next chunk's INPUT, the thing a thought must
+# be to be fed back). Needed before rollout can feed the model's own predictions back. One change vs m0_math.
+base: next/m0_math.yaml
+latent:
+  in_head: true
+  in_loss: true
+  beta_in: 1.0

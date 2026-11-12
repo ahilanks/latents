@@ -134,7 +134,8 @@ class Rollout:
             vs.append(v.to(vs[0].dtype))
             K = torch.cat(ks, 1).transpose(1, 2)
             V = torch.cat(vs, 1).transpose(1, 2)
-            with sdpa_kernel(sdpa_kernel_backend):  # mem-efficient: never fall back to the O(M^2)-memory math kernel
+            # mem-efficient on GPU: never fall back to the O(M^2)-memory math kernel (CPU only has the math kernel)
+            with sdpa_kernel(sdpa_kernel_backend if K.is_cuda else SDPBackend.MATH):
                 o = F.scaled_dot_product_attention(q.to(K.dtype).transpose(1, 2), K, V, attn_mask=mask)
             hcur = mx.out_proj(o.transpose(1, 2).reshape(B, M, -1))
             if blk.mlp is not None:
@@ -151,29 +152,53 @@ class Rollout:
         self.cap.clear(self.tag)
         return z
 
-    def losses(self, head, chunks, cu1, pred_all, tgt):
+    def losses(self, head, chunks, cu1, pred_all, tgt, feed_all=None, feed_head=None, in_tgt=None, dist=None, w=None,
+               valid=None):
         """head: predictor head; chunks: true chunk inputs c (T1, D_in); pred_all: head(P(c<=t)) (T1, D_t);
-        tgt: c̄ (T1, D_t). Returns {s: L1 of the s-step prediction} and {s: copy baseline at horizon s}."""
+        tgt: c̄ (T1, D_t). Returns {s: loss of the s-step prediction} and {s: L1 copy baseline at horizon s}.
+        What is fed back as the next input: head's prediction (default), or, with feed_all / feed_head, a second head
+        that predicts the next INPUT (needed when the targets do not live in the input space, e.g. chunk-local targets);
+        its rollout predictions are graded against in_tgt (the next inputs), stored in self.last_in.
+        dist: element-wise distance (default |p - t|); w: (T1,) per-target weights (e.g. segment lengths);
+        valid: (T1,) bool, chunks that may be targets (padding chunks are not). L1 values for logging: self.last_l1."""
         T1 = tgt.shape[0]
         layout = self.layout(cu1, T1)
         B, M, lens, row, pos = layout
         kv = self._pass1_kv(B, M, row, pos)
-        prev_pred = pred_all
+        dist = dist or (lambda p, t: (p - t).abs())
+
+        def red(err, idx):  # (n, D) element-wise errors at targets idx + 1 -> scalar
+            e = err.mean(-1)
+            if w is None:
+                return e.mean()
+            ww = w[idx + 1].float()
+            return (ww * e).sum() / ww.sum().clamp(min=1.0)
+
+        prev = pred_all if feed_all is None else feed_all
         out, copy = {}, {}
+        self.last_in, self.last_l1 = {}, {}
         for s in range(2, self.k + 1):
             # slot p gets the (s-1)-step prediction made at slot p-1; slots without an anchor get the true chunk
-            fed = torch.roll(prev_pred, 1, 0).to(chunks.dtype)
+            fed = torch.roll(prev, 1, 0).to(chunks.dtype)
             rin = torch.where((pos >= s - 1)[:, None], fed, chunks)
             if self.predictor_only:
                 rin = rin.detach()
             z = self.run_pass(s, rin, layout, kv)
             pred = head(z).float()
-            valid = (pos >= s - 1) & (pos + 1 < lens[row])
-            idx = torch.nonzero(valid).squeeze(1)
+            ok = (pos >= s - 1) & (pos + 1 < lens[row])
+            if valid is not None:
+                ok = ok & valid[(torch.arange(T1, device=ok.device) + 1).clamp(max=T1 - 1)]
+            idx = torch.nonzero(ok).squeeze(1)
+            nxt = pred
+            if feed_head is not None:
+                nxt = feed_head(z).float()
             if idx.numel():
-                out[s] = (pred[idx] - tgt[idx + 1]).abs().mean()
+                out[s] = red(dist(pred[idx], tgt[idx + 1]), idx)
+                if feed_head is not None and in_tgt is not None:
+                    self.last_in[s] = red(dist(nxt[idx], in_tgt[idx + 1]), idx)
                 with torch.no_grad():
+                    self.last_l1[s] = (pred[idx] - tgt[idx + 1]).abs().mean()
                     copy[s] = (tgt[idx - (s - 1)] - tgt[idx + 1]).abs().mean()
-            prev_pred = pred
+            prev = nxt
         self.cap.clear(self.tag)
         return out, copy

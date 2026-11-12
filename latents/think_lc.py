@@ -176,9 +176,12 @@ class LCThinker(Thinker):
             f.tgt_in = self.lat.input_targets(self.m, out, x).float()
             j = next_pairs(out.cu1, tgt.shape[0], 1)
             j = j[chunk_valid[j + 1]]
-            f.l_in = self.wmean(self.lat.dist_fn(self.lat.in_head(out.z_full[j]).float(), f.tgt_in[j + 1]).mean(-1),
-                                f.seg[j + 1])
-            l_lat = l_lat + f.l_in
+            if getattr(self.lat, "in_loss", False):  # already part of the latent loss (pretrained with it)
+                f.l_in = st_lat["lat/in_l"]
+            else:
+                f.l_in = self.wmean(self.lat.dist_fn(self.lat.in_head(out.z_full[j]).float(), f.tgt_in[j + 1]).mean(-1),
+                                    f.seg[j + 1])
+                l_lat = l_lat + f.l_in
         return ce_lm, l_lat, l_ratio, tgt, valid, st_lat
 
     def answer_ce(self, lg, ctx, a0s):

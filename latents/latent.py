@@ -118,6 +118,15 @@ class LatentObjective(nn.Module):
         # summary of the next segment). With chunk-local targets the first head's prediction is not a valid input;
         # this one is what the model feeds back to itself when it thinks (latents/think_lc.py).
         self.in_head = make_head(lcfg.get("head", "linear"), D1, D0, dev) if lcfg.get("in_head") else None
+        # in_loss: train the second head during pretraining too (its target = the next chunk's input), so own
+        # predictions are valid inputs from the start; the reasoning stage then does not add it a second time
+        self.in_loss = bool(lcfg.get("in_loss", False)) and self.in_head is not None
+        self.beta_in = float(lcfg.get("beta_in", 1.0))
+        # rollout during pretraining: what is fed back (head | in_head) and the horizon schedule
+        # [[fraction of training, k], ...] (the last entry whose fraction has been reached sets k)
+        self.rollout_feed = lcfg.get("rollout_feed", "head")
+        self.rollout_schedule = [(float(f), int(k)) for f, k in lcfg.get("rollout_schedule", []) or []]
+        assert self.rollout_feed == "head" or self.in_head is not None, "rollout_feed=in_head needs latent.in_head"
         self.chunk_pool = mc.get("chunk_pool", "hard")
         self.reg = lcfg.get("reg", "none")  # none | var | vicreg | vicreg_corr | sigreg
         self.beta_cov = float(lcfg.get("beta_cov", 1.0))  # weight of the off-diagonal term (vicreg, vicreg_corr)
@@ -166,7 +175,20 @@ class LatentObjective(nn.Module):
     # ------------------------------------------------------------------ targets
     def needs_ema_states(self, mc):
         # chunk-local targets replace the full-sequence pass of the target encoder (the surprise router still reads it)
-        return self.target == "ema" and not (self.target_local and mc.get("router", "learned") != "surprise")
+        if self.target != "ema":
+            return False
+        if self.in_loss or self.rollout_feed == "in_head":  # input targets are pooled full-sequence EMA states
+            return True
+        return not (self.target_local and mc.get("router", "learned") != "surprise")
+
+    def k_at(self, step, total_steps):
+        """Rollout horizon at this point of training (rollout_schedule), else the configured rollout_k."""
+        k = self.rollout.k
+        frac = step / max(total_steps, 1)
+        for f, kk in self.rollout_schedule:
+            if frac >= f:
+                k = kk
+        return k
 
     @staticmethod
     def local_states(emb, enc, x, mask, cap=0):
@@ -374,16 +396,25 @@ class LatentObjective(nn.Module):
             j = j[chunk_valid[j + 1]]
         pred_all = self.head(out.z_full)  # (T1, D0)
         pred = pred_all[j].float()
+        seg_all = None
         if self.loss_weight == "len":
             pos = torch.nonzero(out.bpred[0].boundary_mask).squeeze(1)
-            seg = pos - torch.cat((pos.new_full((1,), -1), pos[:-1]))
-            seg[out.cu1[:-1].long()] = 1  # a row's first chunk is its first byte
-            w = seg[j + 1].float()
+            seg_all = (pos - torch.cat((pos.new_full((1,), -1), pos[:-1]))).float()
+            seg_all[out.cu1[:-1].long()] = 1  # a row's first chunk is its first byte
+            w = seg_all[j + 1]
             l_tf = (w * self.dist_fn(pred, tgt[j + 1]).mean(-1)).sum() / w.sum().clamp(min=1.0)
         else:
             l_tf = self.dist_fn(pred, tgt[j + 1]).mean()
         loss = self.beta_tf * l_tf
         st = {"lat/tf_l1": l_tf if self.dist == "l1" else (pred - tgt[j + 1]).abs().mean().detach()}
+        in_tgt = None
+        if self.in_loss or (self.rollout is not None and self.rollout_feed == "in_head"):
+            in_tgt = self.input_targets(model, out, x).float()
+        if self.in_loss:
+            e_in = self.dist_fn(self.in_head(out.z_full[j]).float(), in_tgt[j + 1]).mean(-1)
+            l_in = (seg_all[j + 1] * e_in).sum() / seg_all[j + 1].sum().clamp(min=1.0) if seg_all is not None else e_in.mean()
+            loss = loss + self.beta_in * l_in
+            st["lat/in_l"] = l_in
         for k, hk in zip(self.horizons, self.hheads):
             jk = next_pairs(out.cu1, T1, k)
             if chunk_valid is not None:
@@ -392,14 +423,26 @@ class LatentObjective(nn.Module):
             loss = loss + self.beta_h * l_k / len(self.horizons)
             st[f"lat/tf{k}_l1"] = l_k
         if self.rollout is not None:
-            lr_, cp = self.rollout.losses(self.head, out.chunks, out.cu1, pred_all, tgt)
+            if self.rollout_schedule:
+                self.rollout.k = self.k_at(step, total_steps)
+            feed = self.rollout_feed == "in_head"
+            lr_, cp = self.rollout.losses(self.head, out.chunks, out.cu1, pred_all, tgt,
+                                          feed_all=self.in_head(out.z_full) if feed else None,
+                                          feed_head=self.in_head if feed else None, in_tgt=in_tgt,
+                                          dist=self.dist_fn, w=seg_all, valid=chunk_valid)
             if lr_:
                 l_r = sum(lr_.values()) / len(lr_)
                 loss = loss + self.beta_r * l_r
-                st["lat/r_l1"] = l_r
-                for k_, v in lr_.items():
+                st["lat/r_loss"] = l_r
+                st["lat/r_l1"] = sum(self.rollout.last_l1.values()) / len(self.rollout.last_l1)
+                st["lat/rollout_k"] = torch.tensor(float(self.rollout.k))
+                for k_, v in self.rollout.last_l1.items():
                     st[f"lat/r{k_}_l1"] = v
                     st[f"lat/copy{k_}_l1"] = cp[k_]
+                if self.rollout.last_in:
+                    l_ri = sum(self.rollout.last_in.values()) / len(self.rollout.last_in)
+                    loss = loss + self.beta_r * self.beta_in * l_ri
+                    st["lat/r_in"] = l_ri
         if self.contrast == "cpc":
             l_c, acc = self.cpc_loss(pred_all, tgt, out.cu1)
             loss = loss + self.beta_cpc * l_c

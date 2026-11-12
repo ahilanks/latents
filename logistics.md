@@ -731,3 +731,27 @@ gates and job files. ⚠️ R0 re-runs the hcD3 recipe first to confirm the refa
   - **End to end is not solved.** With the 32-byte window the reasoning is not merged on s0 (10 thoughts per problem) but the cuts never settle: 141–166% of them move between checkpoints 3000 steps apart (`y=48. o|=48+13=61. |p=61-4=57.| |u=…` → `y=48. o=|48+13=61. p|=…` → `y=48. o=|48+13=61. |p=|61-4=57. |u=|…`), and reading is not learned. On s1 the cuts move the same way and the first steps end up merged (5.9 thoughts, `y=48. o=48+13=61. |p=61-4=57. |u=57-56=1.`).
   - **Where the session ends.** (1) Learned word-level cuts from the latent objective alone: solid (0.6B and 3B, two seeds). (2) With those cuts held, ~one silent thought per written step solves whole problems at 97–98% on one pretrained model (above written CoT, and to 8–9 steps when trained on 2–6); needs ~6000–9000 thought-training steps; not yet on the other pretrained model. (3) Open: cuts that keep learning during reasoning training without leaving the steps (they merge or wander; `scripts/cut_drift.py` measures it).
   - All runs uploaded to HF (`runs/<name>`). Pod stopped after this commit.
+- **(2026-11-12, cloud session, no GPU) Next round, code only — not run yet** (`scripts/next_math_rollout.txt`). Agreed plan: find out why the anti-collapse term blows up on arithmetic, put math into pretraining, and roll out during pretraining, end to end.
+  - `scripts/reg_diag.py <run>` (no training): the regularizer exactly as training computes it, split into variance and covariance parts, with the gradient it sends into the router and encoder (next to the latent loss's own), on four kinds of batch:
+    - 8 KB web windows
+    - one problem per row (the reasoning stage)
+    - the same problems packed into 8 KB rows
+    - one problem per row with whole-batch statistics
+
+    Hypothesis: per-row statistics on ~10 formulaic chunks cannot reach a spread calibrated on 8 KB of web text. If packing fixes it, compute it over packed rows in the reasoning stage; otherwise recalibrate.
+  - `latents/prepare_math.py` → `data/fwe_math`:
+    - mix: 75% FineWeb-Edu, 20% FineMath (finemath-4plus), 5% synthetic chains with written reasoning (a seed not used by the tests)
+    - mixed in ~1 MiB blocks of whole documents, in proportion to the bytes still owed
+    - `val.u8` = the web val set (comparable with every earlier run), plus `val_math.u8` (held-out FineMath) and `val_arith.u8`
+  - **Trainer:** `train.extra_val` scores extra validation sets next to `val` (`val_math/...`, `val_arith/...`); `scripts/eval_extra_val.py` does the same for older runs.
+  - **Rollout in pretraining:**
+    - `latent.in_loss` trains the second head (next chunk's input) during pretraining.
+    - `rollout_feed=in_head` feeds its predictions back, graded against the real next chunks (the first head) and the real next inputs (the second head), in the latent loss's distance, per-byte weights and padding mask.
+    - `rollout_schedule` sets the horizon over training (2 → 4 → 8).
+    - `rollout_predictor_only=false`: no detaching, gradients reach the router and encoder (CPU test).
+    - Every chunk is a starting point (no sampling).
+  - **Configs `configs/next/`**, one change each:
+    - `m0_math` = rt4n6r on the math mix
+    - `m1_inhead` = + second head
+    - `m2_roll` = + rollout 2 → 4 → 8, micro-batch 4
+  - **Job file:** `scripts/next_math_rollout.txt` runs the diagnostic, the data prep, the old web-only runs scored on math, a 3-step full-size memory check at horizon 8, the 6 runs at 0.6B, and `cut_drift.py` (how each model cuts the written reasoning before any reasoning training). 82 CPU tests pass.

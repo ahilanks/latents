@@ -1,0 +1,10 @@
+# Next round, step 2 (plan of 2026-11-12): the word-cut recipe (router/rt4n6r) pretrained on web text WITH math:
+# 75% FineWeb-Edu, 20% FineMath, 5% synthetic arithmetic chains with written reasoning (latents/prepare_math.py).
+# One change vs rt4n6r: the training data. Web val BPB stays comparable (val.u8 is the same file); math is scored on
+# held-out FineMath (val_math) and held-out synthetic chains (val_arith).
+base: router/rt4n6r.yaml
+group: next-math
+data_dir: data/fwe_math
+train:
+  extra_val: {math: val_math.u8, arith: val_arith.u8}
+  extra_val_windows: 64

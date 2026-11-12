@@ -161,8 +161,11 @@ def int_keys(mc):
 
 # ----------------------------------------------------------------------------- data
 class Data:
-    def __init__(self, tokenizer, data_dir):
+    def __init__(self, tokenizer, data_dir, extra_val=None):
+        """extra_val: {name: file in data_dir} of extra byte-level validation sets (e.g. math), evaluated next to
+        val.u8 and logged as val_<name>/... (bytes tokenizer only)."""
         dd = ROOT / data_dir
+        self.extra = {k: np.fromfile(dd / f, dtype=np.uint8) for k, f in (extra_val or {}).items()}
         self.bpe = tokenizer == "gpt2"
         suf = "gpt2.u16" if self.bpe else "u8"
         dt = np.uint16 if self.bpe else np.uint8
@@ -244,11 +247,12 @@ _PREV_BND = {}  # boundary mask of the first val batch at the previous eval (rou
 
 
 @torch.no_grad()
-def evaluate(model, data, mc, tc, lat=None, max_windows=None):
+def evaluate(model, data, mc, tc, lat=None, max_windows=None, val=None, prefix="val"):
+    """val / prefix: evaluate another byte stream (an extra validation set) and name its metrics <prefix>/..."""
     rank, world = dist_info()
     model.eval()
     L = tc["seq_len"]
-    v = torch.from_numpy(data.val.astype(np.int64))
+    v = torch.from_numpy((data.val if val is None else val).astype(np.int64))
     n = (len(v) - 1) // L
     if max_windows:
         n = min(n, max_windows)
@@ -266,8 +270,8 @@ def evaluate(model, data, mc, tc, lat=None, max_windows=None):
         with autocast():
             out = model_forward(model, x, mc, lat)
             if lat is not None:
-                for k, val in lat.eval_metrics(model, out, x).items():
-                    lat_acc[k] = lat_acc.get(k, 0.0) + val
+                for k, mval in lat.eval_metrics(model, out, x).items():
+                    lat_acc[k] = lat_acc.get(k, 0.0) + mval
         ce = F.cross_entropy(out.logits.float().flatten(0, 1), y.flatten(), reduction="sum")
         acc[0] += ce.double()
         acc[1] += data.target_bytes(y).sum().double()
@@ -276,10 +280,10 @@ def evaluate(model, data, mc, tc, lat=None, max_windows=None):
             p_hist += torch.histc(out.bpred[0].boundary_prob[..., -1].float(), bins=10, min=0.0, max=1.0).double()
             if i == 0:  # the same windows at every eval: how many boundaries changed since the last one
                 m0 = out.bpred[0].boundary_mask.detach().clone()
-                prev = _PREV_BND.get("mask")
+                prev = _PREV_BND.get(prefix)
                 if prev is not None and prev.shape == m0.shape:
                     moved = ((m0 ^ prev).sum() / prev.sum().clamp(min=1)).item()
-                _PREV_BND["mask"] = m0
+                _PREV_BND[prefix] = m0
             b = out.bpred[0].boundary_mask.view(x.shape)
             acc[2] += b.sum()
             acc[3] += b.numel()
@@ -297,19 +301,19 @@ def evaluate(model, data, mc, tc, lat=None, max_windows=None):
     lt = torch.tensor([lat_acc.get(k, 0.0) for k in keys] + [len(lat_acc) > 0], dtype=torch.float64, device=DEV)
     all_reduce_(lt)
     model.train()
-    res = {"val/bpb": (acc[0] / LN2 / acc[1]).item()}
+    res = {f"{prefix}/bpb": (acc[0] / LN2 / acc[1]).item()}
     if acc[3] > 0:
-        res["val/compression_L1/L0"] = (acc[2] / acc[3]).item()
-        res["val/edge_prec"] = (acc[4] / acc[2].clamp(min=1)).item()
-        res["val/space_recall"] = (acc[6] / acc[5].clamp(min=1)).item()
+        res[f"{prefix}/compression_L1/L0"] = (acc[2] / acc[3]).item()
+        res[f"{prefix}/edge_prec"] = (acc[4] / acc[2].clamp(min=1)).item()
+        res[f"{prefix}/space_recall"] = (acc[6] / acc[5].clamp(min=1)).item()
         if world == 1:
             ph = p_hist / p_hist.sum().clamp(min=1)
             for k_ in range(10):
-                res[f"val/p_hist/{k_ / 10:.1f}"] = ph[k_].item()
+                res[f"{prefix}/p_hist/{k_ / 10:.1f}"] = ph[k_].item()
             if moved is not None:
-                res["val/bnd_moved"] = moved  # (added + removed boundaries) / previous boundaries, first val batch
-    for k, val in zip(keys, lt[:-1].tolist()):
-        res[f"val/{k}"] = val / acc[7].item()
+                res[f"{prefix}/bnd_moved"] = moved  # (added + removed boundaries) / previous boundaries, first val batch
+    for k, val_ in zip(keys, lt[:-1].tolist()):
+        res[f"{prefix}/{k}"] = val_ / acc[7].item()
     return res
 
 
@@ -377,7 +381,7 @@ def main(argv):
     torch.backends.cuda.matmul.allow_tf32 = True
     torch.backends.cudnn.allow_tf32 = True
 
-    data = Data(cfg["model"]["tokenizer"], cfg.get("data_dir", "data/fwe"))
+    data = Data(cfg["model"]["tokenizer"], cfg.get("data_dir", "data/fwe"), cfg["train"].get("extra_val"))
     mc, tc = prepare(cfg, data)
     B, L = tc["batch_size"], tc["seq_len"]
     bytes_per_step = B * L * data.bytes_per_token
@@ -502,6 +506,9 @@ def main(argv):
                 break
         if (step > 0 and step % tc.get("eval_every", 1000) == 0) or step == total_steps - 1:
             ev = evaluate(model, data, mc, tc, lat=lat, max_windows=tc.get("eval_windows"))
+            for nm, arr in data.extra.items():
+                ev.update(evaluate(model, data, mc, tc, lat=lat, max_windows=tc.get("extra_val_windows", 64), val=arr,
+                                   prefix=f"val_{nm}"))
             ev["flops"] = cum_flops
             log(ev, step)
             if rank == 0:
@@ -532,6 +539,9 @@ def main(argv):
         final = ev if ev else {}
     else:
         final = evaluate(model, data, mc, tc, lat=lat, max_windows=tc.get("final_eval_windows"))
+        for nm, arr in data.extra.items():
+            final.update(evaluate(model, data, mc, tc, lat=lat, max_windows=tc.get("final_extra_val_windows"), val=arr,
+                                  prefix=f"val_{nm}"))
     if rank == 0:
         sample = None if killed else chunk_sample(model, data, mc, lat)
         summary = {"name": name, "group": cfg.get("group"), **{k: v for k, v in final.items()},
