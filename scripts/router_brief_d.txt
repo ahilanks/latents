@@ -1,0 +1,7 @@
+# Router brief, round 3 (2026-11-12): end to end throughout (every gradient flows; only the ratio-loss weight changes).
+# Ratio weight between 0.03 (cuts die) and 1.0 (cuts hold but look regular) on the chunk-level-target variant, then
+# second seeds. (RT5-s0, variance floor only, was started separately.)
+python -m latents.train configs/router/rt4w01.yaml name=RT4w01-s0 train.seed=0
+python -m latents.train configs/router/rt4w03.yaml name=RT4w03-s0 train.seed=0
+python -m latents.train configs/router/rt4r.yaml name=RT4r-s1 train.seed=1
+python -m latents.train configs/router/rt2r.yaml name=RT2r-s1 train.seed=1

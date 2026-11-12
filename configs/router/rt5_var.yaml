@@ -1,0 +1,5 @@
+# Simplest regularizer on the end-to-end fix: variance floor only (no covariance term), within each sequence, like the
+# fixed-chunk reference (R6). One change vs rt3r.
+base: router/rt3r.yaml
+latent:
+  reg: var

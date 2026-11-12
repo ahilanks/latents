@@ -1,0 +1,7 @@
+# Reference for the router track: R6 (fixed 4-byte chunks, within-sequence variance floor) with the L2 latent loss.
+base: ladder/r6_detach_trunk.yaml
+group: router
+latent:
+  dist: l2
+train:
+  eval_every: 500

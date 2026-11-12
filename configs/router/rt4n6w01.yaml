@@ -1,0 +1,5 @@
+# chunk-level targets, end to end; count target one cut per 6 bytes (H-Net default N=6, close to the word rate the
+# model picks by itself), ratio-loss weight 0.1. One change vs rt4w01 (N=4).
+base: router/rt4w01.yaml
+model:
+  N: 6

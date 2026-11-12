@@ -1,0 +1,5 @@
+# Router brief 3A: the VICReg term is computed on within-sequence-centred chunk latents (each sequence's mean chunk
+# latent subtracted first). One change vs rt2_vicreg.
+base: router/rt2_vicreg.yaml
+latent:
+  reg_scope: within

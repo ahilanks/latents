@@ -103,7 +103,9 @@ def step_train_flops(mc, out, lat=None, nest=None):
         hk = lat.cfg.get("head", "linear")
         fwd += T1 * _head_fwd(hk, d1, d0)
         if lat.target == "ema":
-            ema += B * L * enc_f
+            ema += B * L * enc_f  # full-sequence pass, or the chunk-local pass that replaces it (same bytes)
+        if getattr(lat, "target_local", False) and lat.reg_local and lat.reg != "none":
+            fwd += B * L * enc_f  # online chunk-local pass for the regularizer (forward + backward)
         if lat.rollout is not None:
             fwd += (lat.rollout.k - 1) * T1 * (main_tok + _head_fwd(hk, d1, d0))
     ctx = out.extras.get("levels")

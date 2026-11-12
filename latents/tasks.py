@@ -9,7 +9,7 @@ A problem is a chain of variable updates mod 100; the chain of thought writes ou
 Training documents = Q + CoT + answer (byte stream, documents separated by byte 254 like FineWeb-Edu), so the
 latent model learns to predict the chunk latents of the chain of thought. The test file keeps the parts apart.
 
-usage: python -m latents.tasks --out data/task_arith [--train_bytes 2e8] [--no_cot]
+usage: python -m latents.tasks --out data/task_arith [--train_bytes 2e8] [--no_cot] [--test_steps 2,8]
 --no_cot writes Q + answer documents (no chain of thought) with the same test problems, for a direct-answer baseline.
 """
 import argparse
@@ -73,8 +73,9 @@ def main():
     ap.add_argument("--train_bytes", type=float, default=2e8)
     ap.add_argument("--n_test", type=int, default=2000)
     ap.add_argument("--no_cot", action="store_true")
+    ap.add_argument("--test_steps", default="2,8", help="min,max steps of the test problems (e.g. 2,12 for a long test set)")
     a = ap.parse_args()
-    write(a.out, a.train_bytes, n_test=a.n_test, cot=not a.no_cot)
+    write(a.out, a.train_bytes, n_test=a.n_test, cot=not a.no_cot, test_steps=tuple(int(v) for v in a.test_steps.split(",")))
 
 
 if __name__ == "__main__":

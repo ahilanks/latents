@@ -1,0 +1,7 @@
+# Fair test of chunk-level targets: fixed 4-byte pieces, only the target changes. The target of chunk j is the EMA teacher
+# run over that chunk alone from a zero state (router brief 3B); inputs, regularizer and everything else as the reference.
+base: router/ref_fixed_l2.yaml
+latent:
+  target_local: true
+  target_local_cap: 64
+  reg_local: false

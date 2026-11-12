@@ -240,6 +240,9 @@ def routing_losses(model, out, mc):
 
 
 # ----------------------------------------------------------------------------- eval
+_PREV_BND = {}  # boundary mask of the first val batch at the previous eval (router brief: boundaries that move)
+
+
 @torch.no_grad()
 def evaluate(model, data, mc, tc, lat=None, max_windows=None):
     rank, world = dist_info()
@@ -253,6 +256,8 @@ def evaluate(model, data, mc, tc, lat=None, max_windows=None):
     mine = list(range(n))[rank::world]
     acc = torch.zeros(8, dtype=torch.float64, device=DEV)  # ce, bytes, nb, nc, nprec, nsp, nrec, nbatches
     lat_acc = {}
+    p_hist = torch.zeros(10, dtype=torch.float64, device=DEV)  # histogram of the boundary probabilities p_t
+    moved = None
     ws = torch.tensor(WS_BYTES, device=DEV)
     for i in range(0, len(mine), B):
         idx = mine[i:i + B]
@@ -268,6 +273,13 @@ def evaluate(model, data, mc, tc, lat=None, max_windows=None):
         acc[1] += data.target_bytes(y).sum().double()
         acc[7] += 1
         if out.bpred:
+            p_hist += torch.histc(out.bpred[0].boundary_prob[..., -1].float(), bins=10, min=0.0, max=1.0).double()
+            if i == 0:  # the same windows at every eval: how many boundaries changed since the last one
+                m0 = out.bpred[0].boundary_mask.detach().clone()
+                prev = _PREV_BND.get("mask")
+                if prev is not None and prev.shape == m0.shape:
+                    moved = ((m0 ^ prev).sum() / prev.sum().clamp(min=1)).item()
+                _PREV_BND["mask"] = m0
             b = out.bpred[0].boundary_mask.view(x.shape)
             acc[2] += b.sum()
             acc[3] += b.numel()
@@ -290,6 +302,12 @@ def evaluate(model, data, mc, tc, lat=None, max_windows=None):
         res["val/compression_L1/L0"] = (acc[2] / acc[3]).item()
         res["val/edge_prec"] = (acc[4] / acc[2].clamp(min=1)).item()
         res["val/space_recall"] = (acc[6] / acc[5].clamp(min=1)).item()
+        if world == 1:
+            ph = p_hist / p_hist.sum().clamp(min=1)
+            for k_ in range(10):
+                res[f"val/p_hist/{k_ / 10:.1f}"] = ph[k_].item()
+            if moved is not None:
+                res["val/bnd_moved"] = moved  # (added + removed boundaries) / previous boundaries, first val batch
     for k, val in zip(keys, lt[:-1].tolist()):
         res[f"val/{k}"] = val / acc[7].item()
     return res

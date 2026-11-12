@@ -315,3 +315,153 @@ class Thinker:
                       "thought_loss": l_th.detach(), "answer_lat_loss": l_ans_lat.detach(),
                       "lm_ce": ce_lm.detach(), "lm_lat": l_lat.detach(), "mean_k": sum(ks) / len(ks), "p_true": p_true,
                       "_ce_ans": ce_ans} | extra
+
+    # ------------------------------------------------------------------ Coconut-style (Hao et al. 2024), in latent space
+    @staticmethod
+    def cot_steps(p):
+        """The written steps of a problem's reasoning (the restated assignment first): 'a=17.', 'b=17+25=42.', ..."""
+        return p["cot"].rstrip("\n").split(" ")
+
+    def coconut_split(self, p, stage, c):
+        """Stage s replaces the first s written steps. Returns (BOS+question, remaining text + answer, thoughts)."""
+        toks = self.cot_steps(p)
+        k = min(stage, len(toks))
+        rest = (" ".join(toks[k:]) + "\n") if k < len(toks) else ""
+        qb = bytes([BOS]) + p["q"].encode()
+        if c > 0:
+            n_th = c * k
+        else:  # as many thoughts as the replaced text has chunks (fixed-chunk models)
+            removed = len(p["cot"]) - len(rest)
+            n_th = sum(1 for pos in range(len(qb), len(qb) + removed) if pos % self.mc["pool_k"] == 0)
+        return qb, rest.encode() + p["answer"].encode(), n_th
+
+    def loss_coconut(self, probs, stages, c=0, w_lm=1.0, step=0, total_steps=1, dec_true=0.0, beta_rest=1.0,
+                     anchor_w=0.0, bptt="full"):
+        """Coconut in latent space. Per problem, the first stages[b] written steps are replaced by the model's own
+        thoughts (head(main-net output) fed back, gradient through the whole chain, no target of their own). The text
+        after them -- the remaining steps and the answer -- is encoded with the replaced bytes deleted (the byte
+        encoder is recurrent, so encoding the full text would carry the replaced steps past the thoughts), fed as real
+        chunk inputs after the thoughts, and each of its chunks is predicted (latent loss vs EMA targets). That loss is
+        the only signal the thoughts get. The decoder reads the stop-gradient predicted latents (answer CE, decoder
+        only; + dec_true on the true latents). Plus the normal training on the full written examples (w_lm), as in
+        loss_pure. c: thoughts per replaced step; 0 = as many as the replaced text has chunks (needs pool_k).
+        anchor_w > 0 (needs c = 0): thought j also gets its latent target, the j-th replaced chunk's EMA latent in the
+        full written text (as in loss_pure). The trainer fades this weight to 0, so the anchors bootstrap the
+        thoughts and the signal from what follows takes over.
+        bptt: "full" = gradient through the whole thought chain (Coconut); "1" = truncated: a thought fed back as the
+        next input is detached, so each thought (and the pass that made it) gets the losses' gradient directly, but it
+        does not compound back through the earlier thoughts."""
+        assert anchor_w == 0 or c == 0, "anchors need one thought per replaced chunk (c = 0)"
+        B = len(probs)
+        # 1. normal training on the full written examples (identical to loss_pure step 1)
+        full = [bytes([BOS]) + (p["q"] + p["cot"] + p["answer"]).encode() for p in probs]
+        xf = self.batch(full)
+        Lf = xf.shape[1]
+        out = model_forward(self.m, xf, self.mc, self.lat)
+        lens = torch.tensor([len(f) for f in full], device=xf.device)
+        valid = (torch.arange(Lf - 1, device=xf.device)[None, :] < (lens[:, None] - 1)).float()
+        ce_tok = F.cross_entropy(out.logits[:, :-1].float().flatten(0, 1), xf[:, 1:].flatten(), reduction="none").view(B, Lf - 1)
+        ce_lm = (ce_tok * valid).sum() / valid.sum()
+        real_pos = torch.arange(Lf, device=xf.device)[None, :] < lens[:, None]
+        chunk_valid = real_pos.flatten()[out.bpred[0].boundary_mask]
+        l_lat, _ = self.lat.loss(self.m, out, xf, step=step, total_steps=total_steps, chunk_valid=chunk_valid)
+        # 2. the edited streams: question + remaining written steps + answer (replaced bytes deleted)
+        sp = [self.coconut_split(p, s, c) for p, s in zip(probs, stages)]
+        qb, n_th = [s[0] for s in sp], [s[2] for s in sp]
+        ed = [q + r for q, r, _ in sp]
+        x = self.batch(ed)
+        L = x.shape[1]
+        h, cu, bp = self.encode(x)
+        idx = torch.tensor([b * L + len(q) for b, q in enumerate(qb)], device=x.device)
+        mask, prob, sel = bp.boundary_mask.clone(), bp.boundary_prob.clone(), bp.selected_probs.clone()
+        mask[idx] = True  # the text after the thoughts starts a chunk
+        prob[idx] = torch.tensor([0.0, 1.0], device=x.device, dtype=prob.dtype)
+        sel[idx] = 1.0
+        hc, cu1, _, _ = self.bb.chunk_layer(h, mask, cu)
+        mv = mask.view(B, L)
+        qn = [int(mv[b, :len(qb[b])].sum()) for b in range(B)]
+        rows = [hc[cu1[b]:cu1[b + 1]] for b in range(B)]
+        # 3. own thoughts, generated one after another with gradient (n_th sequential main-net passes)
+        seqs = [self.pad(rows[b][:qn[b]]) for b in range(B)]
+        ths = [[] for _ in range(B)]
+        for t in range(max(n_th, default=0)):
+            act = [b for b in range(B) if t < n_th[b]]
+            z, zcu = self.run_main([seqs[b] for b in act])
+            cth = self.lat.head(z[zcu[1:].long() - 1]).to(hc.dtype)
+            for i, b in enumerate(act):
+                ths[b].append(cth[i])
+                fed = cth[i:i + 1].detach() if bptt == "1" else cth[i:i + 1]
+                seqs[b] = torch.cat((seqs[b], self.pad(fed)), 0)
+        D0 = hc.shape[-1]
+        th_t = [torch.stack(o) if o else hc.new_zeros(0, D0) for o in ths]
+        # 4. full pass [question; thoughts; remaining text + answer]: predict every chunk after the thoughts
+        full_seqs = [torch.cat((self.pad(rows[b][:qn[b]]), self.pad(th_t[b]), self.pad(rows[b][qn[b]:])), 0) for b in range(B)]
+        z, zcu = self.run_main(full_seqs)
+        zr = [z[zcu[b]:zcu[b + 1]] for b in range(B)]
+        with torch.no_grad():
+            tgt = self.lat.ema_states(self.m, x)[mask].float()
+            if getattr(self.lat, "target_norm", None) == "ln":
+                tgt = F.layer_norm(tgt, tgt.shape[-1:])
+        preds, tgts = [], []
+        for b in range(B):
+            n_rest = int(mv[b, :len(ed[b])].sum()) - qn[b]  # chunks that start inside the example
+            pos = torch.arange(qn[b] + n_th[b] - 1, qn[b] + n_th[b] - 1 + n_rest, device=x.device)
+            preds.append(self.lat.head(zr[b][pos]).float())
+            tgts.append(tgt[cu1[b] + qn[b]: cu1[b] + qn[b] + n_rest])
+        P, T = torch.cat(preds), torch.cat(tgts)
+        l_rest = self.lat.dist_fn(P, T).mean()
+        # 5. decoder on the stop-gradient predicted latents of the edited stream (decoder-only gradient)
+        zc = torch.cat([torch.cat((zr[b][:qn[b]], zr[b][qn[b] + n_th[b]:]), 0) for b in range(B)], 0).detach()
+        with torch.no_grad():
+            src = self.lat.head(zc).to(hc.dtype)
+        lg = self._decode(x, h, mask, prob, sel, cu, cu1, src)
+
+        def ans_ce(lg):
+            ce, n = 0.0, 0
+            for b in range(B):
+                a0 = len(ed[b]) - len(probs[b]["answer"]) + 5  # first answer byte, after "#### "
+                ce = ce + F.cross_entropy(lg[b, a0 - 1: len(ed[b]) - 1].float(),
+                                          torch.tensor(list(ed[b][a0:]), device=lg.device), reduction="sum")
+                n += len(ed[b]) - a0
+            return ce / n
+        ce_ans = ans_ce(lg)
+        loss = w_lm * (ce_lm + l_lat) + beta_rest * l_rest + ce_ans
+        extra = {}
+        if anchor_w > 0 and sum(n_th) > 0:
+            # thought j vs the latent of the j-th replaced chunk in the full written text (EMA target encoder)
+            with torch.no_grad():
+                tgt_a = self.lat.targets(self.m, out, xf).float()
+                if getattr(self.lat, "target_norm", None) == "ln":
+                    tgt_a = F.layer_norm(tgt_a, tgt_a.shape[-1:])
+                mvf = out.bpred[0].boundary_mask.view(B, Lf)
+                offf = torch.cat((torch.zeros(1, device=xf.device, dtype=torch.long), mvf.sum(1).cumsum(0)))
+            pa, ta = [], []
+            for b in range(B):
+                if n_th[b] == 0:
+                    continue
+                q0 = int(offf[b]) + int(mvf[b, :len(qb[b])].sum())
+                pa.append(th_t[b].float())
+                ta.append(tgt_a[q0: q0 + n_th[b]])
+            l_anchor = self.lat.dist_fn(torch.cat(pa), torch.cat(ta)).mean()
+            loss = loss + anchor_w * l_anchor
+            extra["anchor_loss"] = l_anchor.detach()
+        extra["anchor_w"] = anchor_w
+        if dec_true > 0:
+            bp0 = out.bpred[0]
+            with torch.no_grad():
+                tgt_f = self.lat.targets(self.m, out, xf).float()
+                if getattr(self.lat, "target_norm", None) == "ln":
+                    tgt_f = F.layer_norm(tgt_f, tgt_f.shape[-1:])
+            src_pred = self.lat.head(out.z_full).to(out.chunks.dtype)
+            lg_full = self._decode(xf, out.enc, bp0.boundary_mask, bp0.boundary_prob, bp0.selected_probs, out.cu0,
+                                   out.cu1, self._true_src(src_pred, tgt_f, out.cu1))
+            ce_t = F.cross_entropy(lg_full[:, :-1].float().flatten(0, 1), xf[:, 1:].flatten(), reduction="none").view(B, Lf - 1)
+            ce_lm_true = (ce_t * valid).sum() / valid.sum()
+            ce_ans_true = ans_ce(self._decode(x, h, mask, prob, sel, cu, cu1, self._true_src(src, tgt, cu1)))
+            loss = loss + dec_true * (w_lm * ce_lm_true + ce_ans_true)
+            extra |= {"lm_ce_true": ce_lm_true.detach(), "answer_ce_true": ce_ans_true.detach()}
+        with torch.no_grad():
+            rest_l1 = (P - T).abs().mean()
+        return loss, {"answer_ce": ce_ans.detach(), "rest_l1": rest_l1, "rest_loss": l_rest.detach(),
+                      "lm_ce": ce_lm.detach(), "lm_lat": l_lat.detach(), "mean_thoughts": sum(n_th) / B,
+                      "mean_stage": sum(stages) / B} | extra

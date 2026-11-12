@@ -1,0 +1,16 @@
+# Router brief (user, 2026-11-12), baseline. Latent-only H-Net (R6: no byte gradient into encoder, router or main net),
+# learned H-Net router (cosine rule; N=4 so chunks match R4's fixed size), hard selection z_j = x_{t_j}, ratio loss
+# kept. L2 latent loss. Targets = EMA teacher pooled over each segment with the detached online p (rule 1, 2A).
+# No regularizer: R6's within-sequence variance floor is removed (regularizers come in at 2B).
+base: ladder/r6_detach_trunk.yaml
+group: router
+model:
+  pool_k: 0
+  router: learned
+  N: 4
+latent:
+  dist: l2
+  reg: none
+  target_pool: true
+train:
+  eval_every: 500

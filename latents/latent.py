@@ -98,6 +98,27 @@ class LatentObjective(nn.Module):
         self.hheads = nn.ModuleList([make_head(lcfg.get("head", "linear"), D1, D0, dev) for _ in self.horizons])
         # ladder knobs
         self.dist = lcfg.get("dist", "l1")  # l1 | l2 (squared error): the prediction distance of the TF losses
+        # router brief, rule 1: targets = the EMA teacher's states pooled over each segment with the DETACHED online
+        # boundary probabilities (1A formula), never the hard boundary state alone
+        self.target_pool = bool(lcfg.get("target_pool", False))
+        # router brief 3B: chunk-local targets. y_j = the target encoder run over segment S_j alone, from a zero state
+        # (its last target_local_cap bytes), read at the boundary. reg_local: the regularizer is also applied to the
+        # ONLINE encoder's chunk-local states (the EMA target itself carries no gradient).
+        self.target_local = bool(lcfg.get("target_local", False))
+        self.target_local_cap = int(lcfg.get("target_local_cap", 64))
+        self.reg_local = bool(lcfg.get("reg_local", self.target_local))
+        # the regularizer sees chunk latents pooled with DETACHED boundary probabilities: it shapes the encoder but
+        # cannot move the boundaries (with pooled inputs its gradient into p otherwise drives the cut rate to 0)
+        self.reg_detach_p = bool(lcfg.get("reg_detach_p", False))
+        # how the next-chunk loss is averaged: "chunk" = every chunk counts once (default); "len" = every byte counts
+        # once (each target chunk weighted by the bytes in its segment), so merging hard-to-predict chunks into fewer
+        # chunks does not lower the loss
+        self.loss_weight = lcfg.get("loss_weight", "chunk")
+        # a second head that predicts what the next chunk's INPUT will look like (the EMA encoder's context-carrying
+        # summary of the next segment). With chunk-local targets the first head's prediction is not a valid input;
+        # this one is what the model feeds back to itself when it thinks (latents/think_lc.py).
+        self.in_head = make_head(lcfg.get("head", "linear"), D1, D0, dev) if lcfg.get("in_head") else None
+        self.chunk_pool = mc.get("chunk_pool", "hard")
         self.reg = lcfg.get("reg", "none")  # none | var | vicreg | vicreg_corr | sigreg
         self.beta_cov = float(lcfg.get("beta_cov", 1.0))  # weight of the off-diagonal term (vicreg, vicreg_corr)
         self.reg_scope = lcfg.get("reg_scope", "within")  # within | batch
@@ -144,7 +165,26 @@ class LatentObjective(nn.Module):
 
     # ------------------------------------------------------------------ targets
     def needs_ema_states(self, mc):
-        return self.target == "ema"
+        # chunk-local targets replace the full-sequence pass of the target encoder (the surprise router still reads it)
+        return self.target == "ema" and not (self.target_local and mc.get("router", "learned") != "surprise")
+
+    @staticmethod
+    def local_states(emb, enc, x, mask, cap=0):
+        """Encoder states with the state reset after every boundary (and at row starts): the state at boundary t_j has
+        only seen its own segment S_j = (t_{j-1}, t_j], or its last `cap` bytes. One pass over the same packed bytes
+        (the SSM and its causal conv are isolated per packed sequence), so no cutting or padding. Returns (T0, D0)."""
+        B, L = x.shape
+        T = B * L
+        idx = torch.arange(T, device=x.device)
+        start = idx % L == 0
+        start[1:] |= mask[:-1]
+        if cap:
+            nb = torch.where(mask, idx, torch.full_like(idx, T + cap))
+            nb = torch.flip(torch.cummin(torch.flip(nb, [0]), 0).values, [0])  # next boundary at or after t
+            start |= idx == nb - cap + 1
+        pos = torch.nonzero(start).squeeze(1)
+        cu = torch.cat((pos, pos.new_tensor([T]))).to(torch.int32)
+        return enc(emb(x).flatten(0, 1), cu_seqlens=cu, max_seqlen=int((cu[1:] - cu[:-1]).max()))
 
     @torch.no_grad()
     def ema_states(self, model, x):
@@ -155,13 +195,34 @@ class LatentObjective(nn.Module):
         return self.tgt_enc(h, cu_seqlens=cu, max_seqlen=L)
 
     @torch.no_grad()
-    def targets(self, model, out, x):
-        if self.target == "online":
-            return out.chunks.detach()
+    def input_targets(self, model, out, x):
+        """What the next chunk's input will be: the EMA encoder's states, pooled per segment like the inputs."""
         h = out.extras.get("ema_h")
         if h is None:
             h = self.ema_states(model, x)
-        return h[out.bpred[0].boundary_mask]
+        bp = out.bpred[0]
+        if self.chunk_pool == "mean":
+            from latents.models import segment_pool
+            return segment_pool(h, bp.boundary_prob[..., -1].detach(), bp.boundary_mask, out.cu0)
+        return h[bp.boundary_mask]
+
+    @torch.no_grad()
+    def targets(self, model, out, x):
+        if self.target == "online":
+            return out.chunks.detach()
+        bp = out.bpred[0]
+        if self.target_local:
+            if "tgt_local" not in out.extras:
+                out.extras["tgt_local"] = self.local_states(self.tgt_emb, self.tgt_enc, x, bp.boundary_mask,
+                                                            self.target_local_cap)[bp.boundary_mask]
+            return out.extras["tgt_local"]
+        h = out.extras.get("ema_h")
+        if h is None:
+            h = self.ema_states(model, x)
+        if self.target_pool:
+            from latents.models import segment_pool
+            return segment_pool(h, bp.boundary_prob[..., -1].detach(), bp.boundary_mask, out.cu0)
+        return h[bp.boundary_mask]
 
     @torch.no_grad()
     def after_step(self, model, step, total_steps):
@@ -313,7 +374,14 @@ class LatentObjective(nn.Module):
             j = j[chunk_valid[j + 1]]
         pred_all = self.head(out.z_full)  # (T1, D0)
         pred = pred_all[j].float()
-        l_tf = self.dist_fn(pred, tgt[j + 1]).mean()
+        if self.loss_weight == "len":
+            pos = torch.nonzero(out.bpred[0].boundary_mask).squeeze(1)
+            seg = pos - torch.cat((pos.new_full((1,), -1), pos[:-1]))
+            seg[out.cu1[:-1].long()] = 1  # a row's first chunk is its first byte
+            w = seg[j + 1].float()
+            l_tf = (w * self.dist_fn(pred, tgt[j + 1]).mean(-1)).sum() / w.sum().clamp(min=1.0)
+        else:
+            l_tf = self.dist_fn(pred, tgt[j + 1]).mean()
         loss = self.beta_tf * l_tf
         st = {"lat/tf_l1": l_tf if self.dist == "l1" else (pred - tgt[j + 1]).abs().mean().detach()}
         for k, hk in zip(self.horizons, self.hheads):
@@ -338,16 +406,32 @@ class LatentObjective(nn.Module):
             st["lat/cpc"] = l_c
             st["lat/cpc_acc"] = acc
         if self.reg != "none":
+            c_reg = out.chunks
+            if self.reg_detach_p and self.chunk_pool == "mean":
+                from latents.models import segment_pool
+                bp0 = out.bpred[0]
+                c_reg = segment_pool(out.enc, bp0.boundary_prob[..., -1].detach(), bp0.boundary_mask, out.cu0)
             if chunk_valid is None:
-                l_reg, st_r = self.reg_loss(out.chunks, out.cu1, step, total_steps)
+                l_reg, st_r = self.reg_loss(c_reg, out.cu1, step, total_steps)
             else:
                 row, _ = row_ids(out.cu1, T1)
                 n = torch.zeros(out.cu1.numel() - 1, dtype=torch.long, device=row.device).index_add_(0, row, chunk_valid.long())
                 cu_v = torch.cat((n.new_zeros(1), n.cumsum(0))).to(out.cu1.dtype)
-                l_reg, st_r = self.reg_loss(out.chunks[chunk_valid], cu_v, step, total_steps)
+                l_reg, st_r = self.reg_loss(c_reg[chunk_valid], cu_v, step, total_steps)
             loss = loss + self.beta_reg * l_reg
             st["lat/reg"] = l_reg
             st.update(st_r)
+            if self.target_local and self.reg_local:
+                # the same regularizer on the online encoder's chunk-local states (what the targets are made of)
+                bm = out.bpred[0].boundary_mask
+                y_on = self.local_states(model.embeddings, model.backbone.encoder, x, bm, self.target_local_cap)[bm]
+                if chunk_valid is None:
+                    l_ry, st_y = self.reg_loss(y_on, out.cu1, step, total_steps)
+                else:
+                    l_ry, st_y = self.reg_loss(y_on[chunk_valid], cu_v, step, total_steps)
+                loss = loss + self.beta_reg * l_ry
+                st["lat/reg_local"] = l_ry
+                st["lat/reg_local_std"] = st_y["lat/reg_std"]
         if self.router_grad == "reinforce":
             l_rf, st_rf = self.reinforce_loss(out, pred_all, tgt, j)
             loss = loss + self.beta_rf * l_rf
@@ -374,6 +458,13 @@ class LatentObjective(nn.Module):
         st["lat/tgt_eff_rank"] = eff_rank(tgt)
         st["lat/tgt_within_frac"] = within_frac(tgt, out.cu1)
         st["lat/chunk_within_frac"] = within_frac(out.chunks, out.cu1)
+        # chunk latents (predictor inputs z_j): per-dimension std and effective rank, overall and within sequence
+        zc = out.chunks.float()
+        zw = center_rows(zc, out.cu1)
+        st["lat/z_std"] = zc.std(0).mean()
+        st["lat/z_std_within"] = zw.pow(2).mean(0).sqrt().mean()
+        st["lat/z_eff_rank"] = eff_rank(zc)
+        st["lat/z_eff_rank_within"] = eff_rank(zw)
         st["lat/ratio_tf_copy"] = (st["lat/tf_l1"] / st["lat/copy_l1"].clamp(min=1e-9))
         for s in range(2, 10):
             if f"L{s}/tf_l1" in st:

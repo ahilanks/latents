@@ -106,6 +106,25 @@ def fixed_routing(B: int, L: int, k: int, device) -> RoutingModuleOutput:
     return hard_routing(pos % k == 0)
 
 
+def segment_pool(x: torch.Tensor, p: torch.Tensor, mask: torch.Tensor, cu: torch.Tensor) -> torch.Tensor:
+    """p-weighted mean over each segment (router brief, 1A): z_j = sum_{t in S_j} p_t x_t / sum_{t in S_j} p_t, with
+    S_j = (t_{j-1}, t_j], the bytes after the previous boundary up to and including boundary j (causal: z_j only
+    depends on bytes <= t_j). x (T, D) packed rows, p (T,) boundary probabilities, mask (T,) boundaries (every row
+    starts with one), cu (B+1,) row offsets. Returns (M, D), M = mask.sum(), in boundary order (= chunk_layer's
+    order). Bytes after a row's last boundary are dropped. Segment id = cumsum(b) - b; two scatter-adds."""
+    b = mask.long()
+    M = int(b.sum())
+    seg = torch.cumsum(b, 0) - b
+    lens = (cu[1:] - cu[:-1]).long()
+    row = torch.repeat_interleave(torch.arange(lens.numel(), device=x.device), lens)
+    segc = seg.clamp(max=M - 1)
+    keep = (seg < M) & (row[mask][segc] == row)  # the segment's boundary is in the byte's own row
+    w = p.float() * keep
+    num = torch.zeros(M, x.shape[-1], device=x.device, dtype=torch.float32).index_add_(0, segc, w[:, None] * x.float())
+    den = torch.zeros(M, device=x.device, dtype=torch.float32).index_add_(0, segc, w)
+    return (num / den.clamp(min=1e-6)[:, None]).to(x.dtype)
+
+
 def pool_packed(cu: torch.Tensor, k: int) -> RoutingModuleOutput:
     """Fixed boundaries every k tokens of each packed row (rows of different lengths)."""
     T = int(cu[-1])
@@ -141,6 +160,7 @@ def forward_lm(m: HNetForCausalLM, input_ids: torch.Tensor, pool_k: int = 0, det
                     probabilities used by dechunk/STE are detached (the decoder is a pure readout, ladder R6)
       floor         the decoder sees only its own byte embedding (control: what the decoder can do alone)
       pred_ste      multiply main-net inputs by STE(selected_probs): router gradient from the latent loss (R8)
+      chunk_pool    hard (default: the boundary byte's encoder state) | mean (p-weighted segment mean, router brief 1A)
       router_fn     callable(h, cu) -> RoutingModuleOutput replacing the learned router (surprise / sampled)
       topdown       callable(hc, cu1, max1) -> (T1, D1) added to the main-net input (levels >= 2)
     """
@@ -165,6 +185,8 @@ def forward_lm(m: HNetForCausalLM, input_ids: torch.Tensor, pool_k: int = 0, det
     else:
         bp = bb.routing_module(h, cu_seqlens=cu)
     hc, cu1, max1, _ = bb.chunk_layer(h, bp.boundary_mask, cu)
+    if o.get("chunk_pool") == "mean":  # router brief 1A: every byte's p gets gradient through its segment's weight
+        hc = segment_pool(h, bp.boundary_prob[..., -1], bp.boundary_mask, cu).to(hc.dtype)
     if o.get("pred_ste"):
         hc = hc * ste_func(bp.selected_probs[bp.boundary_mask]).to(hc.dtype)
     # == bb.main_network(hc, ...) (innermost HNet: pad -> Isotropic -> truncate), keeping the full-width output
@@ -197,7 +219,7 @@ def forward_opts(mc: dict, lat=None) -> dict:
     """Static forward options from the run config (the dynamic ones are added by model_forward)."""
     lc = lat.cfg if lat is not None else {}
     return dict(detach_trunk=bool(lc.get("detach_trunk", False)), floor=bool(mc.get("floor", False)),
-                pred_ste=lc.get("router_grad", "none") == "ste")
+                pred_ste=lc.get("router_grad", "none") == "ste", chunk_pool=mc.get("chunk_pool", "hard"))
 
 
 def model_forward(model, x, mc: dict, lat=None, step_frac: float = 1.0) -> LMOut:

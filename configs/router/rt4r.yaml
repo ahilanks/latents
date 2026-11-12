@@ -1,0 +1,5 @@
+# 3B on fix R: chunk-local targets (see rt4_local.yaml).
+base: router/rt3r.yaml
+latent:
+  target_local: true
+  target_local_cap: 64

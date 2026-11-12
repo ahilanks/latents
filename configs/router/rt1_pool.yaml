@@ -1,0 +1,5 @@
+# Router brief 1A: the predictor input is the p-weighted mean of its segment (bytes after the previous boundary up to
+# and including this one), so every byte's p gets gradient from the latent loss. One change vs rt0_base.
+base: router/rt0_base.yaml
+model:
+  chunk_pool: mean

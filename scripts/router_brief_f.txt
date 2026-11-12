@@ -1,0 +1,5 @@
+# Router brief, round 4 (2026-11-12): RT4w01-s0 (chunk-local targets, ratio weight 0.1) learned stable word-start cuts.
+# Second seed of it, and the same ratio weights on the "repaired" variant (pooled context targets).
+python -m latents.train configs/router/rt4w01.yaml name=RT4w01-s1 train.seed=1
+python -m latents.train configs/router/rt2w01.yaml name=RT2w01-s0 train.seed=0
+python -m latents.train configs/router/rt2w03.yaml name=RT2w03-s0 train.seed=0

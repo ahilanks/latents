@@ -1,0 +1,4 @@
+# "repaired" (pooled context targets), end to end, ratio-loss weight 0.3.
+base: router/rt2r.yaml
+model:
+  alpha: 0.3

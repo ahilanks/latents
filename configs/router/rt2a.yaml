@@ -1,0 +1,4 @@
+# rt2 + the regularizer sees chunk latents pooled with detached p (it cannot move boundaries). Fix A for "cuts go to 0".
+base: router/rt2_vicreg.yaml
+latent:
+  reg_detach_p: true

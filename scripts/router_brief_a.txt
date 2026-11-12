@@ -1,0 +1,8 @@
+# Router brief, round 2 (2026-11-12). rt2/rt3 as specified drove the cut rate to 0 within 300 steps (the regularizer's
+# gradient into p through the pooling beats the ratio loss at weight 0.03). Fix A: the regularizer sees chunk latents
+# pooled with detached p. Then 3A and 3B (chunk-local targets) on top. Seed-1 baselines after.
+python -m latents.train configs/router/rt4a.yaml name=RT4a-s0 train.seed=0
+python -m latents.train configs/router/rt2a.yaml name=RT2a-s0 train.seed=0
+python -m latents.train configs/router/rt3a.yaml name=RT3a-s0 train.seed=0
+python -m latents.train configs/router/rt0_base.yaml name=RT0-s1 train.seed=1
+python -m latents.train configs/router/rt1_pool.yaml name=RT1-s1 train.seed=1

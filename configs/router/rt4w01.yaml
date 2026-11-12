@@ -1,0 +1,4 @@
+# chunk-level targets, end to end, ratio-loss weight 0.1 (between 0.03 = cuts die and 1.0 = regular cuts).
+base: router/rt4r.yaml
+model:
+  alpha: 0.1

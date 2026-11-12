@@ -1,0 +1,4 @@
+# rt2 + ratio-loss weight 1.0 (was 0.03), so the ratio loss can hold the cut rate. Fix R for "cuts go to 0".
+base: router/rt2_vicreg.yaml
+model:
+  alpha: 1.0

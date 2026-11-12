@@ -1,0 +1,7 @@
+# Router brief 3B: chunk-local targets. The target of chunk j is the EMA teacher run over that chunk's bytes alone, from
+# a zero state (last 64 bytes at most), read at the boundary; the regularizer is also applied to the online encoder's
+# chunk-local states. The predictor input is unchanged. One change vs rt3_within.
+base: router/rt3_within.yaml
+latent:
+  target_local: true
+  target_local_cap: 64

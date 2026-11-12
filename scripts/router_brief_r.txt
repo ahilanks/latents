@@ -1,0 +1,6 @@
+# Router brief, round 2 (2026-11-12). Fix R for "cuts go to 0": ratio-loss weight 1.0 (was 0.03); the regularizer still
+# reaches the router. Then 3A and 3B (chunk-local targets) on top. Seed-1 fixed-chunk reference after.
+python -m latents.train configs/router/rt4r.yaml name=RT4r-s0 train.seed=0
+python -m latents.train configs/router/rt2r.yaml name=RT2r-s0 train.seed=0
+python -m latents.train configs/router/rt3r.yaml name=RT3r-s0 train.seed=0
+python -m latents.train configs/router/ref_fixed_l2.yaml name=RTREF-s1 train.seed=1

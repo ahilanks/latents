@@ -1,0 +1,9 @@
+# Router brief 2B: VICReg on the chunk latents z_j (variance hinge at std 1 + off-diagonal covariance), statistics over
+# all chunks in the batch. One change vs rt1_pool.
+base: router/rt1_pool.yaml
+latent:
+  reg: vicreg
+  reg_scope: batch
+  reg_gamma: 1.0
+  beta_reg: 1.0
+  beta_cov: 1.0

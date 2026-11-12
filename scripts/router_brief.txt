@@ -1,0 +1,13 @@
+# Router brief (user, 2026-11-12): learned routing for the latent-only H-Net, one change at a time, 0.6B bytes, 2 seeds.
+# rt0 baseline (learned router, hard selection, pooled EMA targets, no regularizer) -> rt1 +1A segment pooling ->
+# rt2 +2B VICReg (batch) -> rt3 +3A within-sequence. ref = fixed 4-byte chunks (R6) with the L2 loss.
+python -m latents.train configs/router/rt0_base.yaml name=RT0-s0 train.seed=0
+python -m latents.train configs/router/rt1_pool.yaml name=RT1-s0 train.seed=0
+python -m latents.train configs/router/rt2_vicreg.yaml name=RT2-s0 train.seed=0
+python -m latents.train configs/router/rt3_within.yaml name=RT3-s0 train.seed=0
+python -m latents.train configs/router/ref_fixed_l2.yaml name=RTREF-s0 train.seed=0
+python -m latents.train configs/router/rt0_base.yaml name=RT0-s1 train.seed=1
+python -m latents.train configs/router/rt1_pool.yaml name=RT1-s1 train.seed=1
+python -m latents.train configs/router/rt2_vicreg.yaml name=RT2-s1 train.seed=1
+python -m latents.train configs/router/rt3_within.yaml name=RT3-s1 train.seed=1
+python -m latents.train configs/router/ref_fixed_l2.yaml name=RTREF-s1 train.seed=1

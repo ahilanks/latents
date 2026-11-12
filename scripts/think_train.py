@@ -8,6 +8,9 @@ mode pure (default; latents/think.py loss_pure): the decoder is trained on stop-
 the thoughts; thought inputs start as the true reasoning latents (p_true = 1) and anneal to the model's own over
 the first p_true_frac of training (--teacher_only keeps them true: the "read" step alone). Every step also trains
 on the full written examples (w_lm). mode e2e: the earlier loss (answer CE back-propagated through the thoughts).
+mode coconut (latents/think.py loss_coconut): Coconut's curriculum in latent space. Stage s replaces the first s written
+steps with own thoughts trained only by the latent loss on what follows; stage = step // stage_steps (up to max_stage),
+a random stage per problem with probability p_mix, optimizer state reset at each switch.
 Writes runs/<name>/{final.pt, summary.json, metrics.jsonl} in the latents.train format, with data_dir set to the
 arithmetic task, so `python scripts/latent_cot.py runs/<name>` evaluates it.
 """
@@ -27,7 +30,7 @@ import torch  # noqa: E402
 from latents import latent as latent_lib  # noqa: E402
 from latents import tasks  # noqa: E402
 from latents.models import build_model, param_groups  # noqa: E402
-from latents.think import Thinker  # noqa: E402
+from latents.think_lc import make_thinker  # noqa: E402
 
 
 def load(run, device, lat_over=None):
@@ -39,7 +42,8 @@ def load(run, device, lat_over=None):
     model.load_state_dict(ck["model"])
     lat = latent_lib.build(cfg["latent"], model, cfg["model"])
     missing, unexpected = lat.load_state_dict(ck["latent"], strict=False)
-    assert not unexpected and set(missing) <= {"gamma_est", "rf_baseline"}, (missing, unexpected)
+    assert not unexpected and all(k in ("gamma_est", "rf_baseline") or k.startswith("in_head.") for k in missing), \
+        (missing, unexpected)  # in_head: a second head added at the thought stage starts untrained
     return cfg, model, lat
 
 
@@ -62,7 +66,20 @@ def main():
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--log_every", type=int, default=25)
     ap.add_argument("--data_dir", default="data/task_arith")
-    ap.add_argument("--mode", choices=["pure", "e2e"], default="pure")
+    ap.add_argument("--train_steps", default="2,6", help="min,max reasoning steps of the training problems")
+    ap.add_argument("--mode", choices=["pure", "e2e", "coconut"], default="pure")
+    ap.add_argument("--max_stage", type=int, default=7, help="coconut: the last stage replaces this many written steps")
+    ap.add_argument("--stage_steps", type=int, default=400, help="coconut: optimizer steps per stage (stage 0 first)")
+    ap.add_argument("--p_mix", type=float, default=0.3, help="coconut: per problem, a random stage with this probability")
+    ap.add_argument("--c", type=int, default=0, help="coconut: thoughts per replaced step (0 = the replaced text's chunk count)")
+    ap.add_argument("--beta_rest", type=float, default=1.0, help="coconut: weight of the latent loss after the thoughts")
+    ap.add_argument("--no_reset_opt", action="store_true", help="coconut: keep the optimizer state across stage switches")
+    ap.add_argument("--beta_anchor", type=float, default=0.0,
+                    help="coconut: replaced thoughts also get their latent targets, weight fading linearly to 0 over each stage")
+    ap.add_argument("--anchor_fade", choices=["stage", "none", "run"], default="stage",
+                    help="coconut anchors: fade 1 -> 0 over each stage, keep constant, or fade linearly over the whole run")
+    ap.add_argument("--bptt", choices=["full", "1"], default="full",
+                    help="coconut: gradient through the whole thought chain, or truncated to one hop (fed-back thoughts detached)")
     ap.add_argument("--p_true_frac", type=float, default=0.6)
     ap.add_argument("--teacher_only", action="store_true")
     ap.add_argument("--gamma", type=float, default=1.0)
@@ -86,8 +103,11 @@ def main():
     base_lrs = [g["lr"] for g in opt_groups]
     opt = torch.optim.AdamW(opt_groups, lr=a.lr, betas=(0.9, 0.95), eps=1e-8)
     params = [p for g in opt_groups for p in g["params"]]
-    th = Thinker(model, lat, mc)
+    th = make_thinker(model, lat, mc)  # learned-cut models (chunk_pool = mean) get latents/think_lc.py
+    train_steps = tuple(int(v) for v in a.train_steps.split(","))
     rng = random.Random(1000 + a.seed)  # training problems; the test set uses seed 1 in latents/tasks.py
+    mix_rng = random.Random(2000 + a.seed)  # coconut stage mixing (separate, so the problems match the other modes)
+    cur_stage = 0
     run_dir = ROOT / "runs" / a.name
     run_dir.mkdir(parents=True, exist_ok=True)
     mlog = open(run_dir / "metrics.jsonl", "w")
@@ -99,14 +119,31 @@ def main():
         f = (step + 1) / w if step < w else 0.5 * (1 + math.cos(math.pi * (step - w) / max(1, a.steps - w)))
         for g, lr in zip(opt.param_groups, base_lrs):
             g["lr"] = lr * f
-        probs = [tasks.sample(rng) for _ in range(a.batch)]
+        probs = [tasks.sample(rng, steps=train_steps) for _ in range(a.batch)]
         n_seen += len(probs)
         if a.teacher_only:
             p_true = 1.0
         else:
             p_true = max(0.0, 1.0 - step / max(1.0, a.p_true_frac * a.steps)) if a.p_true_frac > 0 else 0.0
+        if a.mode == "coconut":
+            stage = min(a.max_stage, step // a.stage_steps)
+            if stage != cur_stage:
+                cur_stage = stage
+                if not a.no_reset_opt:
+                    opt.state.clear()  # Coconut resets the optimizer state when the stage switches
+                print(f"stage {stage} from step {step}", flush=True)
+            stages = [mix_rng.randint(0, a.max_stage) if mix_rng.random() < a.p_mix else stage for _ in probs]
         with torch.autocast(**ac):
-            if a.mode == "pure":
+            if a.mode == "coconut":
+                phase = step - cur_stage * a.stage_steps  # steps into the current stage (the last stage runs on)
+                fade = {"stage": max(0.0, 1.0 - phase / a.stage_steps), "none": 1.0,
+                        "run": max(0.0, 1.0 - step / a.steps)}[a.anchor_fade]
+                anchor_w = a.beta_anchor * fade
+                loss, st = th.loss_coconut(probs, stages, c=a.c, w_lm=a.w_lm, step=step, total_steps=a.steps,
+                                           dec_true=a.dec_true, beta_rest=a.beta_rest, anchor_w=anchor_w,
+                                           bptt=a.bptt)
+                st["stage"] = cur_stage
+            elif a.mode == "pure":
                 loss, st = th.loss_pure(probs, p_true=p_true, beta=a.beta, gamma=a.gamma, w_lm=a.w_lm,
                                         step=step, total_steps=a.steps, dec_true=a.dec_true,
                                         thought_grad=a.thought_grad)
@@ -138,7 +175,7 @@ def main():
     cfg = dict(cfg, name=a.name, data_dir=a.data_dir, think=dict(vars(a)))
     torch.save({"model": model.state_dict(), "cfg": cfg, "latent": lat.state_dict()}, run_dir / "final.pt")
     json.dump({"name": a.name, "init": a.init, "steps": a.steps, "problems_seen": n_seen, "final_answer_ce": rec["answer_ce"],
-               "final_thought_l1": rec["thought_l1"], "wall_min": (time.time() - t0) / 60}, open(run_dir / "summary.json", "w"), indent=1)
+               "final_thought_l1": rec.get("thought_l1"), "final_rest_l1": rec.get("rest_l1"), "wall_min": (time.time() - t0) / 60}, open(run_dir / "summary.json", "w"), indent=1)
     print("saved", run_dir, flush=True)
 
 

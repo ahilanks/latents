@@ -1,0 +1,7 @@
+# Router brief, round 6 (2026-11-12): weak ratio weights keep losing the cuts (RT4w01-s1 left the word cuts, N=6 at 0.1
+# died early, cuts die again in the thought stage). Strong weight 1.0 is robust on both seeds but at N=4 it forces 1.5x
+# more cuts than there are words. So: weight 1.0 with the target at the word rate, N=6 (H-Net's default).
+python -m latents.train configs/router/rt4n6r.yaml name=RT4n6r-s0 train.seed=0
+python -m latents.train configs/router/rt4n6r.yaml name=RT4n6r-s1 train.seed=1
+python -m latents.train configs/router/rt2n6r.yaml name=RT2n6r-s0 train.seed=0
+python -m latents.train configs/router/rt2n6r.yaml name=RT2n6r-s1 train.seed=1

@@ -1,0 +1,7 @@
+# Router brief, round 3 (2026-11-12): the simplest end-to-end variant (variance floor only) and second seeds of the
+# end-to-end fix (ratio-loss weight 1.0; every gradient flows).
+python -m latents.train configs/router/rt5_var.yaml name=RT5-s0 train.seed=0
+python -m latents.train configs/router/rt2r.yaml name=RT2r-s1 train.seed=1
+python -m latents.train configs/router/rt4r.yaml name=RT4r-s1 train.seed=1
+python -m latents.train configs/router/rt5_var.yaml name=RT5-s1 train.seed=1
+python -m latents.train configs/router/rt3r.yaml name=RT3r-s1 train.seed=1

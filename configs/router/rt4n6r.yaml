@@ -1,0 +1,6 @@
+# chunk-level targets, end to end; count target one cut per 6 bytes (H-Net default N=6 = about one per word) with the
+# STRONG ratio-loss weight 1.0: the count term holds the cuts alive (as in rt4r) at a rate that matches words.
+# One change vs rt4r (N=4).
+base: router/rt4r.yaml
+model:
+  N: 6

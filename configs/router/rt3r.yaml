@@ -1,0 +1,4 @@
+# 3A on fix R: within-sequence regularizer.
+base: router/rt2r.yaml
+latent:
+  reg_scope: within

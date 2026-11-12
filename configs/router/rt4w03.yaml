@@ -1,0 +1,4 @@
+# chunk-level targets, end to end, ratio-loss weight 0.3.
+base: router/rt4r.yaml
+model:
+  alpha: 0.3

@@ -1,0 +1,3 @@
+# Fair test of chunk-level targets (user, 2026-11-12): fixed 4-byte pieces, only the target type changes vs RTREF.
+python -m latents.train configs/router/ref_fixed_local.yaml name=RTL-s0 train.seed=0
+python -m latents.train configs/router/ref_fixed_local.yaml name=RTL-s1 train.seed=1

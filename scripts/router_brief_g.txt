@@ -1,0 +1,7 @@
+# Router brief, round 5 (2026-11-12): RT4w01 found word-start cuts on both seeds by step 500 (edge precision 0.83 / 0.97)
+# but seed 1 left them (cut rate overshot to 0.30 at step 1000; final edge 0.51). The count target (1 per 4 bytes) pulls
+# against the word rate the model picks (1 per 6). Target N=6 (the H-Net default) so the count term agrees with it.
+python -m latents.train configs/router/rt4n6w01.yaml name=RT4n6w01-s0 train.seed=0
+python -m latents.train configs/router/rt4n6w01.yaml name=RT4n6w01-s1 train.seed=1
+python -m latents.train configs/router/rt4n6w003.yaml name=RT4n6w003-s0 train.seed=0
+python -m latents.train configs/router/rt4n6w003.yaml name=RT4n6w003-s1 train.seed=1

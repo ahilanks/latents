@@ -1,0 +1,4 @@
+# as rt4n6w01 with the H-Net default ratio-loss weight 0.03.
+base: router/rt4n6w01.yaml
+model:
+  alpha: 0.03

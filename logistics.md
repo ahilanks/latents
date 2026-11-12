@@ -437,3 +437,237 @@ gates and job files. ⚠️ R0 re-runs the hcD3 recipe first to confirm the refa
     2. **Re-run the ladder milestones with L2?**
     3. **Producing thoughts:** feed the model's *own* predicted thoughts at inference. The thought L1 is still 0.36 on L2, so rollout error will compound. Measure that first, then try temporal abstraction through nesting.
     4. **Add thought_grad on the L2 base.**
+- **21:42 (2026-11-11) New pod (2× H100, /workspace).** Fresh `runs/`; checkpoints come from HF. The current code builds the same config as L-M1-l2-s0 apart from the seed (configs diffed). The existing evaluator reproduces think-base-l2's teacher mode on this pod: 97.2% (logged 97.15%).
+  - **Running on GPU 0** (`logs/jobs/l2_seed1.sh`): L-M1-l2-s1, then the same thought stage (think-base-l2-s1, think seed 1), then the standard evals and the withhold curve.
+- **22:00 (2026-11-11) Leak-free read-then-compute (`scripts/think_withhold.py`).** No new training: think-base-l2 / think-base-l1 as trained (teacher-only, dec_true 1).
+  - **What changes at test time.** The last m teacher thoughts are withheld, and the model fills them in with its own rollouts (head output fed back) before answering. The total thought count stays the oracle k.
+  - **Control (drop).** The withheld thoughts are removed instead of filled in.
+  - **Leak accounting.** A chunk's latent is the causal encoder state at the chunk's first byte, so the given thoughts have seen the reasoning up to the first byte of the last given chunk.
+    - m = 1 already hides every digit of the answer: per-problem leak share 0.00, and the per-problem leak-free m equals 1 for 99%.
+    - `steps=n` withholds every chunk from the start of the n-th last written step. The model then has the written values up to that step and must compute n whole steps.
+  - **Cross-check.** The m = all endpoint matches the old evaluator's own-thought mode (`latent_cot.py --k oracle`): 43.9% vs 44.0%, and by length 86/74/58/47/39/2/1 vs 85/74/59/46/41/1/1.
+  - **Results** (n=2000; 2–6 steps = the training range, 7–8 = longer). Figure: `python scripts/plot_withhold.py <png> think-base-l2 think-base-l1`.
+
+    | withheld | L2 2–6 | L2 7–8 | L1 2–6 | drop (L2 2–6) |
+    |---|---|---|---|---|
+    | m=0 (teacher) | 99.1 | 92.5 | 92.7 | |
+    | m=1 | 97.8 | 67.0 | 68.0 | 8.1 |
+    | m=2 | 95.8 | 21.8 | 64.1 | 2.8 |
+    | m=4 | 89.3 | 2.6 | 46.3 | 2.4 |
+    | m=8 | 74.5 | 2.1 | 33.1 | 2.1 |
+    | m=all (all thoughts own) | **61.0** | 1.4 | 23.6 | 2.1 |
+    | 1 step computed | **94.5** | | 59.9 | 3.0 |
+    | 2 steps | 83.3 | | 41.4 | 2.6 |
+    | 3 steps | 70.7 | | 29.0 | 2.6 |
+    | 4 steps | 57.7 | | 17.2 | 2.4 |
+    | 5 steps | 46.5 | | 11.0 | 1.4 |
+    | 6 steps | 39.9 | | 9.4 | 1.7 |
+
+  - **The L2 model computes in latent space.** It takes the written state up to some step and rolls out the rest itself:
+    - 94.5% for one whole step, 83% for two, 61% for the whole chain with no written reasoning at all (85% at 2 steps, 41% at 6).
+    - The drop control stays at 2–8%, so the computation is carried by its own rollout thoughts; the answer pass does not compute from the prefix.
+    - Answers equal to the last visible value (reading instead of computing) are at most 5%.
+  - **Accuracy depends on how many steps it computes, not on problem length.** With 2 steps withheld it gets 87/82/84/83/81% at lengths 2–6. Survival is about 0.85 per step for L2 vs about 0.65 for L1.
+  - **Own latents drift slowly.** For the first ~5 rollouts, the L1 distance to the true target equals the teacher-forced error (0.37 vs 0.37, cos 0.99, copy baseline ~4.4). It grows to ~2 (cos 0.75) by rollout 13–15.
+  - **Beyond the training lengths, computing fails while reading works.**
+    - 7–8-step problems: teacher 97/88%, m=1 84/51%, but a whole computed step only 6/1%, and all own ~1%.
+    - The model never saw a 7th step in training. This is the same training-length prior as the latent models' written CoT (which stops after ~6 steps).
+  - **L2 beats L1 everywhere**, by ~2.5× at m=all.
+- **22:28 (2026-11-11) ✅ L2 confirmed with a second seed.** `L-M1-l2-s1` (identical to L-M1-l2-s0 apart from the seed) reached **1.2567** val BPB.
+
+  | 3B, r6_detach_trunk | seed 0 | seed 1 | mean |
+  |---|---|---|---|
+  | L2 | 1.2554 | 1.2567 | 1.2561 |
+  | L1 | 1.2989 | 1.2900 | 1.2945 |
+  | L2 − L1, paired | −0.0435 | −0.0333 | −0.038 |
+
+  - Seed 1 led its L1 pair at every eval: −0.041 (2k), −0.025 (4k), −0.026 (6k), −0.029 (8k), −0.030 (10k).
+  - **L2 becomes the default latent loss.** The thought stage on seed 1 (think-base-l2-s1, think seed 1) finished at 23:06; its evals follow.
+- **23:15 (2026-11-11) Thought stage on seed 1** (think-base-l2-s1: L-M1-l2-s1 + the same recipe, think seed 1). The read-then-compute result replicates qualitatively, with large seed variance. Figure via `scripts/plot_withhold.py`.
+
+  | 2–6-step problems | L2 s0 | L2 s1 | L1 s0 |
+  |---|---|---|---|
+  | teacher reading (m=0) | 99.1 | 91.7 | 92.7 |
+  | overall teacher reading, 2–8 steps (`latent_cot`) | 97.2 | 81.1 | 78.1 |
+  | 1 / 2 / 3 / 6 steps computed | 94.5 / 83.3 / 70.7 / 39.9 | 90.3 / 87.8 / 82.3 / 58.7 | 59.9 / 41.4 / 29.0 / 9.4 |
+  | all thoughts own | 61.0 | **77.8** | 23.6 |
+  | drop control | 1–8 | 1–4 | 2 |
+
+  - **Seed 1 reads worse but computes better.** Per-step survival is ~0.9 vs ~0.85, so its curve is flatter.
+  - **Its reading loss is in the trunk, not the readout.**
+    - Decoder on true answer latents: 100% on both seeds.
+    - Decoder on predicted answer latents: 80.9% vs 97.1%.
+    - Nearest-neighbour answer latent: 56% vs 73%.
+    - Training answer CE plateaued at ~0.05 vs ~0.003.
+  - **Headline numbers become ranges:** reading 81–97% (all lengths), whole chain own 61–78% (2–6 steps). L2 beats L1 on every measure, on both seeds.
+  - Two things differ between the seeds (pretrain and thought stage). A crossed run (thought seed 0 on pretrain s1) would separate them.
+- **23:28 (2026-11-11) Step 2: halting and length (L2 seed 0).**
+  - **Decoding the thoughts** (`scripts/think_decode.py`): the byte decoder reads each own thought exactly as in pretraining.
+    - The decoded thoughts are the written chain ("c=42*3=26.").
+    - On 2–6 steps, the first error is almost always arithmetic (it copies values and operands correctly).
+    - On 7-step problems it writes exactly 6 steps for 85% of problems, skipping an update early (first error at steps 2–3, "name") and still ending on the queried variable.
+  - **Self-halting** (roll out until the decoded text reaches "####", no oracle count): on 2–6 steps it stops at the true count for 91–100% of problems. Accuracy is unchanged vs the oracle count (85/73/59/46/42 vs 85/74/59/46/41). A learned stop decision is not needed for the fixed-chunk model in range.
+  - **Length** (think-l2-len10: think-base-l2's recipe with `--train_steps 2,10`; new test set `data/task_arith_long`, 2–12 steps, 200 per length):
+
+    | length | 2 | 4 | 6 | 7 | 8 | 9 | 10 | 11 | 12 |
+    |---|---|---|---|---|---|---|---|---|---|
+    | read (m=0), 2–6-trained / 2–10-trained | 100 / 98 | 98 / 97 | 100 / 96 | 100 / 96 | 89 / 98 | 86 / 96 | 84 / 97 | 83 / 96 | 53 / 95 |
+    | compute the last step | 96 / 78 | 93 / 91 | 93 / 92 | 2 / 87 | 1 / 93 | 2 / 89 | 3 / 91 | 2 / 90 | 3 / 55 |
+    | whole chain, own | 84 / 67 | 53 / 51 | 42 / 37 | 3 / 21 | 1 / 20 | 3 / 14 | 1 / 11 | 3 / 1 | 2 / 1 |
+
+    - The collapse beyond the training length is the training-length prior. Training on 2–10 moves the break to 11–12.
+    - It extends the reach by about one step: computing the 11th step works at 90%, two steps at 11 at 24%.
+    - Self-halting on 7–10 steps is right for 74–85% of problems.
+    - Cost: weaker on short problems (2 steps: 78% vs 96% for the last step, 67% vs 84% for all own). It sees fewer short problems in training, and seed variance is large (see seed 1).
+- **23:25 (2026-11-11) Coconut-style run launched** (`coconut-l2`, GPU 0, `logs/jobs/coconut_l2.sh`; `latents/think.py loss_coconut`).
+  - **Training through its own rollouts** is a deliberate exception to "teacher-forced only", approved by the user for the thinking.
+  - **Signal:** the latent loss on the remaining text and answer, backpropagated through the thought chain. No decoder gradient reaches the thoughts.
+  - **Leak fix:** the replaced bytes are deleted from the encoded text.
+  - **Thoughts:** one per replaced chunk.
+  - **Schedule:** stages 0–7 × 400 steps, then 800 at stage 7. p_mix 0.3, optimizer reset per stage.
+- **00:30 (2026-11-12) Coconut, first results.**
+  - **Exact curriculum (`coconut-l2`, from the pretrain).** With every thought its own, accuracy stayed at chance through stage 6: 1.7, 1.8, 2.1, 2.5, 2.5, 2.9, 3.5% at the ends of stages 0–6.
+    - 2-step problems, fully latent since stage 3, reached only 5–6%.
+    - The decoder's answer CE on predicted latents rose with each stage (0.16 → 0.36 → 0.54 → 0.74 → 1.0), while on true latents it stayed ~0. The latent loss on what follows does not teach the thoughts to carry the computation in 400 steps per stage.
+  - **Bridge with full BPTT (`coconut-anchor-l2`, from think-base-l2, fading anchors, LR 2e-4) — stopped at step ~420.**
+    - Gradient norms 77–135 at each optimizer reset (exact Coconut: ~1–2).
+    - Anchor loss 0.67 → 6.8. Teacher reading 97.2 → 79.8%; all own 44 → 12.3% (2–6 steps: 36/22/13/5/5).
+    - The gradient through the chain of own thoughts swamps the rest and pulls the thoughts off the representation the readout uses.
+  - **Replaced by `coconut-anchor-tb1-l2`.** The same, with truncated backprop (`--bptt 1`: a fed-back thought is detached as the next input).
+- **00:41 (2026-11-12) The truncated bridge (`coconut-anchor-tb1-l2`) was stopped at step 400.**
+  - Gradients were tame (norm 10 → 2), but at the end of stage 0 all own was **2.4%** (from 44%) and teacher reading 60.9%.
+  - The cause is the per-stage anchor fade, not backprop: once the anchor weight is near 0, the latent signal from what follows neither sustains nor creates the computation.
+  - **Launched `coconut-anchor-const-l2`:** the same with constant anchors (`--anchor_fade none`). It trains on its own rollouts with latent targets plus the signal from what follows.
+- **00:59 (2026-11-12) ❌ Exact Coconut curriculum in latent space (`coconut-l2`) — final.**
+  - With every thought its own: **3.7%** (chance ≈ 1–2%). Per stage (ends of stages 0–7, then the last checkpoint): 1.7, 1.8, 2.1, 2.4, 2.5, 2.9, 3.5, 4.1, 4.1%.
+  - Teacher reading 4.4%: it was never trained on true chunk latents as thoughts.
+  - The decoded thoughts stay text-shaped but scrambled, e.g. `e=9. s=9+3=22. z=22. z=22. #### 22` for `e=97. s=97+33=30. z=30+64=94.`. First errors are mostly format (52%) and operand (44%).
+  - **The latent loss on what follows (no decoder gradient, per the rules) does not teach latent computation in 4000 steps.** Coconut's thoughts get the token cross-entropy of the remaining language. The difference in signal sharpness is the obvious suspect.
+  - Constant-anchor bridge (`coconut-anchor-const-l2`), so far: all own 28.1% (stage 0 end) → 35.3% (stage 1 end), vs 44% for think-base-l2 at the start. Running.
+- **01:50 (2026-11-12) Crossed seeds** (`think-l2-p1t0`: pretrain L-M1-l2-s1, thought stage seed 0, otherwise think-base-l2's recipe).
+
+  | pretrain / thought seed (2–6 steps) | read | 1 step | 3 steps | 6 steps | all own | read, 7 / 8 steps |
+  |---|---|---|---|---|---|---|
+  | s0 / s0 (think-base-l2) | 99.1 | 94.5 | 70.7 | 39.9 | 61.0 | 97 / 88 |
+  | **s1 / s0 (crossed)** | **99.5** | **98.6** | **91.3** | **65.0** | **83.3** | 90 / 45 |
+  | s1 / s1 (think-base-l2-s1) | 91.7 | 90.3 | 82.3 | 58.7 | 77.8 | 73 / 36 |
+
+  - **The pretrain seed drives computing:** s1 gets 78–83% for all own, s0 gets 61%.
+  - **The thought-stage seed drives reading on 2–6 steps:** thought seed 0 reads at 99% on either pretrain. The pretrain also sets reading at 7–8 steps.
+  - The crossed model is the best so far: 83% of whole chains from own thoughts, 98.6% for one computed step.
+  - **Consequence:** single-seed comparisons of the reasoning numbers need a pretrain replicate. The pretrain seed alone moves "all own" by 22 points.
+- **02:13 (2026-11-12) ✅ Coconut curriculum + constant anchors (`coconut-anchor-const-l2`, seed 0) — final.**
+  - Whole chain from own thoughts on 2–6 steps: **61% → 87%** (98/94/91/81/74). Overall 2–8: 44.0 → 63.0%.
+  - Per stage (2–6 steps, ends of stages 0–7 then the final checkpoint): 38, 48, 65, 66, 66, 75, 74, 87, 88, 87.
+  - 3 steps computed: 95/92/88/84 on lengths 3–6. Teacher reading 92% (from 97%).
+  - Training on its own rollouts, with constant trace anchors plus the latent loss on what follows, beats teacher-forced training by a wide margin. Exact Coconut without anchors: 3.7%.
+  - Replicate on the seed-1 pretrain (`coconut-anchor-const-p1`, from think-l2-p1t0 at 83%) is running.
+- **03:11 (2026-11-12) Router brief (user), round 1** (`configs/router/`, `scripts/router_brief.txt`; from scratch, 0.6B bytes, seed 0; latent-only R6 stack, L2, learned H-Net router at N=4, EMA targets pooled per segment with detached p).
+  - New code: `segment_pool` (1A; segments end at their boundary, causal), `latent.target_pool` (rule 1), VICReg at batch / within-sequence scope (2B / 3A), `latent.target_local` (3B: the target encoder's state is reset after every boundary, one packed pass, cap 64 bytes; regularizer also on the online chunk-local states), eval logs (`val/p_hist/*`, `val/bnd_moved`, `val/lat/z_*`). 12 new CPU tests (causality, row isolation, gradient wiring).
+
+  | run | readout bpb | cut rate | cuts at word edges | chunk-latent std | eff. rank |
+  |---|---|---|---|---|---|
+  | RTREF fixed 4-byte chunks (R6 + L2) | **1.447** | 0.250 | 0.32 | 2.40 | 224 |
+  | RT0 baseline (hard selection, no regularizer) | 1.499 | 0.251 | 0.34 | 1.32 | 172 |
+  | RT1 + 1A pooling | 1.627 | 0.250 | 0.25 | **0.11** | 73 |
+  | RT2 + 2B VICReg (batch) | 1.599 | **0.0002** | 0.13 | 0.27 | 23 |
+  | RT3 + 3A within-sequence | 1.620 | **0.0001** | 0.17 | 0.30 | 13 |
+
+  - **RT0:** every p_t sits in [0.4, 0.6]; 70–150% of the boundaries change between evals 500 steps apart. The count is right, the places are noise. Readout 0.05 worse than fixed chunks, about at the floor (1.51).
+  - **RT1:** pooling alone shrinks the latents 12× (gap 2, as the brief predicts); cuts stay unstable.
+  - **RT2 / RT3: the router stops cutting within 200–300 steps.** The regularizer's gradient reaches p through the pooling weights (covariance term 8.8 at step 0) and beats the ratio loss, whose weight 0.03 makes "no cuts" cost only 0.01.
+  - **Round 2 (running):** fix A = the regularizer sees latents pooled with detached p (`reg_detach_p`); fix R = ratio-loss weight 1.0. Each with 2B, 3A and 3B stacked (RT2a/3a/4a, RT2r/3r/4r).
+- **03:50 (2026-11-12) Router brief, round 2** (seed 0, 0.6B, from scratch). User: fix the problems simply, end to end, no tricks; then compare the tokenization with fixed pieces and a tokenizer, with samples.
+
+  | run | readout bpb | cut rate | chunk-latent std / rank | cuts at word edges | words kept whole | same word cut the same way |
+  |---|---|---|---|---|---|---|
+  | GPT-2 BPE tokenizer | (BPE model 1.191) | 0.218 | | 0.77 | 0.90 | 0.99 |
+  | fixed 4-byte (RTREF) | **1.447** | 0.250 | 2.40 / 224 | 0.33 | 0.07 | 0.34 |
+  | normal H-Net N5·T7 (byte-trained router, `side-p06-plain-s0`) | 1.362 (not a readout) | 0.198 | | 0.38 | 0.35 | 0.72 |
+  | surprise router (`L-R9-s0`, L1) | 1.466 | 0.249 | | 0.23 | 0.17 | 0.63 |
+  | RT0 plain | 1.499 | 0.248 | 1.32 / 172 | 0.41 | 0.38 | 0.56 |
+  | RT2a (2B, regularizer cannot move cuts, ratio 0.03) | 1.618 | **0.000** at the end | 0.19 / 9 | | | |
+  | **RT2r (2B, ratio weight 1.0, all gradients flow)** | 1.543 | 0.235 | 1.01 / 253 | 0.26 | 0.21 | 0.32 |
+  | RT4a (3B chunk-local targets, regularizer cannot move cuts) | 1.568 | 0.204 | 1.01 / 254 | 0.31 | 0.33 | 0.37 |
+  | **RT4r (3B chunk-local targets, ratio weight 1.0)** | 1.557 | 0.248 | 1.01 / 253 | 0.32 | 0.22 | 0.29 |
+
+  - **Ratio weight 1.0 fixes "stops cutting" and "latents shrink" with every gradient flowing.** Hiding p from the regularizer (RT2a) does not: the cut rate wandered (0.21 → 0.09) and hit 0 at the end, so the prediction loss alone also pushes cuts away under a weak ratio loss. With chunk-local targets (RT4a) the weak ratio loss nearly holds (0.20).
+  - **The repaired runs are healthy but not better:** readout 1.54–1.56 vs 1.499 plain and 1.447 fixed. Cuts are confident (p < 0.1 for ~70% of bytes, > 0.9 for ~20%) but not word-like, still move > 100% between evals, and are as inconsistent per word as fixed 4-byte pieces (0.29–0.32 vs 0.34). Max piece length 37–40 (plain: 282): with weight 1.0 the cuts look regular.
+  - At 0.6B the normal H-Net's cuts are not word-like either (0.38 at word edges), but they are much more consistent (0.72).
+  - New tools: `scripts/show_cuts.py` (picture of the cuts per method), `scripts/tokenize_compare.py` (statistics).
+  - Running: ratio weights 0.1 / 0.3 on chunk-local targets, variance-floor-only regularizer (RT5), 3A on both fixes, second seeds.
+- **04:35 (2026-11-12) ✅ Learned word-level cuts from the latent objective alone: `RT4w01-s0`** (chunk-local targets + pooled inputs + VICReg within-sequence, **ratio-loss weight 0.1**, all gradients flowing; 0.6B, seed 0). User direction from here: learned chunking only (no fixed chunks), iterate on RT2r / RT4r, then latent reasoning with practice, a longer run, compared with a normal H-Net of the same size.
+
+  | run (0.6B, seed 0) | cut rate | cuts at a word edge | words kept whole | same word cut the same way | cuts moved between the last two evals |
+  |---|---|---|---|---|---|
+  | GPT-2 BPE tokenizer | 0.218 | 0.77 | 0.90 | 0.99 | |
+  | normal H-Net N5·T7 (byte-trained router) | 0.198 | 0.38 | 0.35 | 0.72 | |
+  | RT2r (pooled context targets, ratio 1.0) | 0.235 | 0.34 | 0.27 | 0.40 | 1.08 |
+  | RT4r (chunk-local targets, ratio 1.0) | 0.248 | 0.32 | 0.22 | 0.29 | 1.23 |
+  | **RT4w01 (chunk-local targets, ratio 0.1)** | **0.168** | **0.96** | **0.97** | **0.97** | **0.13** |
+
+  - The router fires on the first letter of each word (pieces = "word + space"); p is below 0.1 for 83% of bytes and above 0.9 for 16%. Edge precision rose 0.83 → 0.96 over training and the cuts settled (moved 0.43 → 0.34 → 0.22 → 0.13).
+  - The cut rate (0.168, one per word) is below the ratio target 0.25: at weight 0.1 the count term no longer dictates the rate. At 1.0 it does (0.25) and the cuts are regular and unstable; at 0.03 with pooled context targets the cuts die.
+  - Readout bpb 1.628 (RT4r 1.557, plain 1.499): not comparable across cut rates (6 vs 4 bytes per chunk). The user's objection to judging by bpb was right here.
+  - Cut statistics are convention-aware now (`model_piece_ends`: the firing byte ends a piece or starts the next, whichever aligns better).
+  - Also this round: RT0-s1 1.4982 (s0 1.4987); RT3r-s0 1.573 (cut 0.244); RT3a-s0 1.614 (cut 0.09, dying); RT5-s0 (variance floor only) stopped cutting (rank 17). Fixed-chunk runs stopped at the user's request.
+  - Learned-cut reasoning code: `latents/think_lc.py` (`LCThinker`: pooled inputs, forced boundaries at part ends, ratio loss kept, thought counts from the router), wired into `think_train.py` / `think_withhold.py`; 8 CPU tests.
+  - Running: RT4w03-s0, RT4r-s1, RT2r-s1, RT4w01-s1, RT2w01-s0, RT2w03-s0.
+- **05:33 (2026-11-12) ✅ Stable word-level cuts on both seeds: `RT4n6r`** = chunk-local targets + pooled inputs + VICReg within-sequence, ratio-loss weight 1.0, **ratio target N=6** (H-Net's default; RT4r used N=4), all gradients flowing; 0.6B.
+
+  | run | cut rate by eval (500 … end) | cuts at a word edge by eval | cuts moved between evals | readout bpb |
+  |---|---|---|---|---|
+  | RT4n6r-s0 | 0.161 0.158 0.165 0.158 0.161 | 0.96 0.96 0.92 0.94 0.95 | 0.19 0.25 0.26 0.16 | 1.553 |
+  | RT4n6r-s1 | 0.162 0.161 0.157 0.162 0.162 | 0.96 0.92 0.92 0.89 0.89 | 0.23 0.33 0.37 0.22 | |
+  | RT4r-s0 / s1 (N=4, weight 1.0) | 0.25 | 0.25 / 0.22 at the end | 1.2 | 1.557 |
+  | RT4w01-s0 / s1 (N=4, weight 0.1) | 0.166 / 0.199 | 0.96 / 0.51 (s1 had 0.97 at step 500, then lost it) | 0.13 / 1.27 | 1.628 |
+  | RT4w03-s0 (N=4, weight 0.3) | 0.231 | 0.42 | 1.21 | 1.587 |
+  | RT4n6w01-s0 / s1 (N=6, weight 0.1) | cuts die until step ~1500–2000, then 0.152 / 0.141 | 0.90 / 0.97 at the end | 0.19 / 0.14 at the end | |
+  | RT2w01-s0 (pooled context targets, N=4, weight 0.1) | 0.001 (dead; stopped) | | | |
+  | RT2r-s1 (pooled context targets, N=4, weight 1.0) | 0.210 | 0.32 | | 1.581 (s0 1.543) |
+
+  - RT4n6r-s0 statistics: 95% of cuts at a word edge, 94.5% of words kept whole, the same word cut the same way 95% of the time (normal H-Net at 0.6B: 38 / 35 / 72; GPT-2 BPE: 77 / 90 / 99). Latents healthy (std 1.01, eff. rank 254).
+  - **Reading:** the model's own rate is one cut per word (~0.16). A strong count term at N=4 forces 1.5× that and breaks word alignment; a weak one cannot keep the cuts alive reliably; a strong one at N=6 does both jobs.
+  - **Thought stage on learned cuts** (`latents/think_lc.py`): on the arithmetic text the VICReg term starts at 1.22 (0.02 on web text) and kills the cuts within 100 steps at weight 0.1; with `--lat reg=none` and weight 0.1 they still died by step 250; with weight 1.0 (RT4r-s0 probe) the cut rate held at 0.249. The reasoning stages run with `--lat reg=none`.
+  - Reasoning repeat `coconut-anchor-const-p1` final (2–6 steps): whole chain 83.3 → 71.3% (seed-0 pretrain: 61.0 → 87.4%). The practice stage is not a consistent gain on fixed chunks.
+  - **Launched (05:30):** `R4n6-3B-s0` = rt4n6r at 3B, then thought stage A, practice stage, evals (`logs/jobs/long_lc.sh`).
+- **05:50 (2026-11-12) Pooled context targets at N=6, weight 1.0 (`RT2n6r`, the "repaired" variant without chunk-local targets):** cuts stay alive (0.154 / 0.147) but are not word-level: 0.32 / 0.29 of cuts at a word edge, the same word cut the same way 0.51 / 0.54, cuts moved 0.9–1.7 between evals; bpb 1.591 / 1.570. With chunk-local targets (RT4n6r): 0.95 / 0.89, 0.95 / 0.90, moved 0.16–0.37, bpb 1.551 / 1.535. **The chunk-local targets are what make the cuts word-level.** Second long run launched on GPU 1: `R4n6-3B-s1` (seed 1).
+- **06:54 (2026-11-12) ✅ Long runs: learned word-level cuts at 3B, two seeds** (`R4n6-3B-s0/s1` = rt4n6r, from scratch; 64–72 min each).
+
+  | 3B, same architecture | cuts per 100 bytes | cuts at a word edge | words kept whole | same word cut the same way | bpb |
+  |---|---|---|---|---|---|
+  | GPT-2 BPE tokenizer | 21.8 | 0.77 | 0.90 | 0.99 | (BPE model 1.082) |
+  | normal H-Net N5·T7 (`side-f3-plain-s1`) | 29.2 | 0.36 | 0.10 | 0.91 | 1.117 (trained on bytes) |
+  | **R4n6-3B-s0** | 16.1 | **0.97** | **0.99** | **0.99** | 1.3928 (readout) |
+  | **R4n6-3B-s1** | 16.3 | **0.98** | **0.99** | **0.99** | 1.3921 (readout) |
+
+  - Cuts settle with training: share of cuts that moved between evals 1000 steps apart fell to 0.04 (s0) and 0.06 (s1) by mid-run; seed 1's early wobble (0.86 at step 2000) went away.
+  - Latents healthy: std 1.01, eff. rank 254 (overall and within sequence), tf/copy 0.69.
+  - The eval suite's word probes (30% / 15%) are not comparable for this model: they label a chunk by the word at its firing byte, which here is the first letter of the NEXT word. A segment-aligned probe is needed.
+  - Thought stage A started on s0 at 06:44 (0.55 s/step).
+- **07:08 (2026-11-12) Thought stage on the 3B word-cut models: the reasoning collapses into one chunk.** Stage A as written (`latents/think_lc.py`, `--lat reg=none`, ratio weight 1.0 at N=6): the number of chunks the router puts on the written reasoning (= thoughts per problem) held at 5–6 and then dropped to 1.0–1.7 (seed 0 at step ~400, seed 1 at step ~900), while the answer was read well from that single chunk (answer CE 0.01–0.14). The overall cut rate stayed 0.10–0.17 (the cuts moved into the question).
+  - **Cause (hypothesis):** the next-chunk loss is a mean over chunks, so merging the hard-to-predict reasoning chunks into one lowers it; the ratio loss can only cost 0.2 at most. The same incentive explains the earlier "cuts die" failures.
+  - **Fix under test:** `latent.loss_weight=len` (each target chunk weighted by its bytes: a mean over bytes, not chunks). With it, seed 0 holds 5.0–5.4 thoughts per problem through step 700 (the old run had collapsed by 400) and reads faster. Both seeds restarted with it (`logs/jobs/reason_lc.sh`, runs `R4n6-3B-s*-think-len`, then `-practice-len`).
+- **07:35 (2026-11-12) Reasoning on the 3B word-cut model, stage A (`R4n6-3B-s0-think-len`: teacher-forced, `--lat reg=none --lat loss_weight=len`).**
+  - Per-byte loss weighting: thoughts per problem held ~5, dipped to 1.6–1.9 around steps 750–900 and recovered by itself (per-chunk weighting never recovered). Seed 1 the same (dip at 900).
+  - **Reading: 93.2%** with the true thoughts (2–8 steps: 97 99 99 98 98 88 75), **6.0 thoughts per problem** (fixed 4-byte chunks: 15.6).
+  - **Own thoughts: chance** (1.2–1.5% for any number withheld, even the last one). With chunk-local targets the head's prediction is not a valid input (inputs are pooled context states), and stage A never feeds one back.
+  - Fair word probe at 3B (`scripts/segment_probe.py`, label = the word a chunk's segment mostly covers): normal H-Net 76.5% (this chunk) / 43.6% (next chunk, from the main-net output); word-cut latent models 49.2 / 51.1% (s0), 44.1 / 52.0% (s1).
+  - **Two ways to make own thoughts valid inputs, in parallel:** (1) the practice stage on s0 (trains on its own predictions as inputs; running); (2) `--lat in_head=true` on s1: a second head predicts the next chunk's input (EMA encoder states pooled per segment), thoughts are made with it, anchors live in that space (`LatentObjective.in_head`, `input_targets`; `LCThinker.th_head`).
+- **07:58 (2026-11-12) Practice stage on chunk-local-space thoughts (`R4n6-3B-s0-practice-len`): stopped at step ~1700.** Own thoughts stayed at chance (2.8% at step 800, 3.0% at 1600); reading from true thoughts fell 93 → 4% (the stage only trains reading its own, different-space thoughts); the reasoning collapsed to one chunk again after step 1200. Per-byte weighting was then applied to every prediction loss of the reasoning stages (`LCThinker.wmean`: thought, tail, anchor, input-head losses). Seed 0 moved to the second-head version as well (`R4n6-3B-s0-think-in`); seed 1's (`R4n6-3B-s1-think-in`, restarted 07:42 with consistent per-byte losses) holds 5–7 thoughts per problem through step 1000.
+- **08:12 (2026-11-12) Second head, per-byte losses everywhere (`R4n6-3B-s1-think-in`):** thoughts per problem held 5–7 until step ~1500, then collapsed to 1.0 and stayed. Eval: reading 78.2% (1.3 thoughts per problem); own thought(s) 1.7% (chance): one thought for the whole reasoning = answering directly. **Per-byte weighting delays the collapse, it does not prevent it.**
+  - **Next fix (running on both seeds, `-think-inw`): windowed ratio loss** (`latent.ratio_window=32`, `LCThinker.ratio`): the ratio loss is computed in every 32-byte window and averaged, so the cut rate must hold locally; the global version is met by cutting in the question only. Seed 0 with it: 7–8 thoughts per problem through step 450.
+- **08:40 (2026-11-12) Windowed ratio loss, end to end (`R4n6-3B-s1-think-inw`: second head, per-byte losses, `ratio_window=32`).** Thoughts per problem held at 7–9 for the whole stage (no collapse), 9.8 at the eval. Reading 72.7% (2–8 steps: 74 78 75 75 73 71 63); own thoughts at chance (m=1 3.1%, 1 step 2.6%, all own 1.6%). Seed 0 with the same settings never learned to read (answer CE 1.25 at step 2650; stopped): forcing one cut per 6 bytes everywhere is more than the arithmetic text's own word rate.
+  - Own thoughts fail even with the second head and only the last thought withheld, so thoughts being valid inputs is not the only obstacle: the teacher-forced prediction of a whole-step chunk is not precise enough yet (input-head L2 0.17–0.25 per dim on unit-variance targets).
+  - **Labelled non-end-to-end comparison started (`R4n6-3B-s0-think-fix`, `--lat cut_from=runs/R4n6-3B-s0`):** cuts from a frozen copy of the pretrained embedding + encoder + router; everything else trains. 5.0–5.2 thoughts per problem by construction; answer CE 0.16 at step 1000.
+- **09:00 (2026-11-12) Cuts held as pretrained (labelled NOT end to end): `R4n6-3B-s0-think-fix`** (`--lat cut_from=runs/R4n6-3B-s0 --lat in_head=true --lat loss_weight=len`; stage A, 3000 × 256).
+  - **Reading: 100.0%** with the true thoughts, at every length 2–8 (2000/2000), 6.1 thoughts per problem. Written CoT on the normal H-Net: 94.6% (93 / 71 at 7 / 8 steps); fixed 4-byte chunks: 97.2% / 81.1% with 15.6 thoughts.
+  - **Own thoughts: 11–12%**, the same for 1 withheld thought (12.2%) and for all own (11.2%), and the same at every problem length (9–15%); drop control 1.2–1.5%. Own-thought latents drift slowly (L1 to target 0.20 → 0.55 over 8 thoughts vs 0.20 → 0.42 teacher-forced; cos 0.97 → 0.67). So nothing compounds: the limit is the precision of a single predicted thought, which now has to carry out a whole written step in one main-network pass (input-head L2 0.41 per dim at the end of stage A).
+  - Windowed end-to-end version in the practice stage (`R4n6-3B-s1-practice-inw-s800`): all own 3.3%, reading back to 6%; stopped. Seed 1 moved to the cuts-held version (`R4n6-3B-s1-think-fix`); the practice stage of s0 is running.
+- **09:32 (2026-11-12) Cuts held, seed 1 (`R4n6-3B-s1-think-fix`), and why own thoughts fail.**
+  - Seed 1: **reading 98.7%** (2–8 steps: 99 98 99 99 99 98 99; 6.4 thoughts per problem); **own thoughts 1.2–1.3%**, tens and units both at chance. Seed 0: reading 100.0%, own thoughts 11–12% with units 85% right and tens 13%.
+  - Not a measurement bug (seed 0, last thought replaced): true input 100%; the head's exact training target (EMA input) 100%; the head's prediction 12.9%; a 50/50 blend 83.9%. |true input − target| = 0.007; |prediction − target| = 0.62 (cos 0.68) for the last thought, 0.19–0.23 (cos 0.94–0.97) for earlier ones.
+  - Linear probes for the digits of the value written in each reasoning chunk (seed 0): true chunk inputs tens 97–100% / units 100%; the head's teacher-forced predictions tens 14–18% / units 99%. **The main network has learned the units-digit half of each step's computation and not the tens (carry) half**; with one thought per written step the whole step must be computed in one pass.
+  - Practice stage on seed 0 (cuts held) at step 800: all own still 11.0%, units 98%, tens 11%.
+  - Chunks on the arithmetic text (pretrained router): `e=97. s | =97+33=30. z | = | 30+64=94.\n`, i.e. one chunk per written step, ending on the next step's first letter.
+  - **Running:** `R4n6-3B-s0-practice-fix` and `R4n6-3B-s0-think-fix-long` (9000 steps) on GPU 0, both cuts held; **`R4n6-3B-s1-think-e2e-long` on GPU 1: end to end** (second head, per-byte losses, `ratio_window=64`, 9000 steps).

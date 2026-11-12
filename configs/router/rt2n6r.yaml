@@ -1,0 +1,4 @@
+# "repaired" (pooled context targets), count target one per 6 bytes, ratio-loss weight 1.0. One change vs rt2r (N=4).
+base: router/rt2r.yaml
+model:
+  N: 6
