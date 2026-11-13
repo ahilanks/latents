@@ -1,0 +1,3 @@
+# Leftovers after the SIGReg runs were stopped (2026-11-13 ~01:10 PT): normal H-Net replicates. Side queue.
+python -m latents.train configs/rdiag/h_nosmooth.yaml name=HX-nosmooth-s1 train.seed=1
+python -m latents.train configs/rdiag/h_base.yaml name=HX-base-s1 train.seed=1
