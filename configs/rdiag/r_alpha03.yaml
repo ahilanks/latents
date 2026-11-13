@@ -1,0 +1,6 @@
+# Ratio-loss weight sweep (router review 2026-11-12): rt4n6r with ratio-loss weight 0.3 instead of 1.0 (H-Net: 0.03).
+# Does the count hold and does the router keep more than one dimension? One change vs rt4n6r.
+base: router/rt4n6r.yaml
+group: rdiag
+model:
+  alpha: 0.3

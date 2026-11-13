@@ -1,0 +1,4 @@
+# r_byte without the smoothing in the per-byte latent loss (dechunk with p = 1): confidence path only. One change.
+base: rdiag/r_byte.yaml
+latent:
+  byte_smooth: false

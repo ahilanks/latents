@@ -1,0 +1,10 @@
+# "Dechunk in latent space" (router review 2026-11-12): rt4n6r + a per-byte latent loss through H-Net's dechunk
+# (confidence STE + smoothing with the live p) that predicts the next byte's encoder state, so the router is trained by
+# the model's own per-byte prediction loss (latent-only); ratio-loss weight back to H-Net's 0.03.
+base: router/rt4n6r.yaml
+group: rdiag
+model:
+  alpha: 0.03
+latent:
+  byte_loss: true
+  beta_byte: 1.0

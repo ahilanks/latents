@@ -1,0 +1,9 @@
+# Ratio-loss weight sweep (2026-11-12 ~22:30 PT): rt4n6r with weight 0.03 / 0.1 / 0.3 (vs 1.0), 2 seeds. Logs router
+# rank (val/router_rank_q, _k) and the share of cuts on the byte after whitespace (val/cuts_after_space) at every eval.
+# Side queue: RUN_JOBS_MAX_PER_GPU=2 RUN_JOBS_MIN_FREE_GB=25.
+python -m latents.train configs/rdiag/r_alpha01.yaml name=RA01-s0 train.seed=0
+python -m latents.train configs/rdiag/r_alpha03.yaml name=RA03-s0 train.seed=0
+python -m latents.train configs/rdiag/r_alpha003.yaml name=RA003-s0 train.seed=0
+python -m latents.train configs/rdiag/r_alpha01.yaml name=RA01-s1 train.seed=1
+python -m latents.train configs/rdiag/r_alpha03.yaml name=RA03-s1 train.seed=1
+python -m latents.train configs/rdiag/r_alpha003.yaml name=RA003-s1 train.seed=1

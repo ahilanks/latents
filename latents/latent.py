@@ -122,6 +122,17 @@ class LatentObjective(nn.Module):
         # predictions are valid inputs from the start; the reasoning stage then does not add it a second time
         self.in_loss = bool(lcfg.get("in_loss", False)) and self.in_head is not None
         self.beta_in = float(lcfg.get("beta_in", 1.0))
+        # byte_loss ("dechunk in latent space", router review 2026-11-12): the predictor's piece outputs are spread back
+        # over the bytes by H-Net's dechunk layer (smoothing with the live p) and scaled by STE(confidence), a linear map
+        # of the byte's own encoder state is added, and a small head predicts the NEXT byte's encoder state (stop-grad).
+        # A per-byte latent loss whose gradient reaches every p_t through the confidence and the smoothing; no bytes
+        # are predicted. byte_smooth=false: dechunk without smoothing (p = 1).
+        self.byte_loss = bool(lcfg.get("byte_loss", False))
+        self.beta_byte = float(lcfg.get("beta_byte", 1.0))
+        self.byte_smooth = bool(lcfg.get("byte_smooth", True))
+        if self.byte_loss:
+            self.byte_in = nn.Linear(D0, D0, device=dev)
+            self.byte_head = make_head("mlp", D0, D0, dev)
         # rollout during pretraining: what is fed back (head | in_head) and the horizon schedule
         # [[fraction of training, k], ...] (the last entry whose fraction has been reached sets k)
         self.rollout_feed = lcfg.get("rollout_feed", "head")
@@ -385,6 +396,26 @@ class LatentObjective(nn.Module):
         d = pred - tgt
         return d.pow(2) if self.dist == "l2" else d.abs()
 
+    def byte_level_loss(self, model, out, pred_all, st):
+        """Per-byte latent loss through H-Net's dechunk (see byte_loss in __init__). Byte t reads the smoothed output of
+        the pieces that started at or before t (causal) plus its own encoder state, and predicts sg(enc_{t+1})."""
+        from hnet.models.hnet import ste_func
+        bp = out.bpred[0]
+        bb = model.backbone
+        prob = bp.boundary_prob if self.byte_smooth else torch.ones_like(bp.boundary_prob)
+        yb = bb.dechunk_layer(pred_all.to(out.enc.dtype), bp.boundary_mask, prob, out.cu1)  # (T0, D0)
+        yb = yb.float() * ste_func(bp.selected_probs).float()
+        enc = out.enc.float()
+        pb = self.byte_head(yb + self.byte_in(enc))
+        T0 = enc.shape[0]
+        nxt = torch.ones(T0, dtype=torch.bool, device=enc.device)
+        nxt[(out.cu0[1:] - 1).long()] = False  # the last byte of a row has no next byte in the row
+        t = torch.nonzero(nxt).squeeze(1)
+        l = self.dist_fn(pb[t], enc[t + 1].detach()).mean()
+        st["lat/byte_l"] = l.detach()
+        st["lat/byte_copy"] = self.dist_fn(enc[t], enc[t + 1]).mean().detach()  # baseline: predict "no change"
+        return l
+
     def loss(self, model, out, x, step=0, total_steps=1, scale=1.0, chunk_valid=None):
         """chunk_valid: optional (T1,) bool, False for chunks made of padding (rows padded to a common length); those
         are never targets and are left out of the regularizer, so padding cannot dilute the latent loss."""
@@ -396,6 +427,8 @@ class LatentObjective(nn.Module):
             j = j[chunk_valid[j + 1]]
         pred_all = self.head(out.z_full)  # (T1, D0)
         pred = pred_all[j].float()
+        st_byte = {}
+        l_byte = self.byte_level_loss(model, out, pred_all, st_byte) if self.byte_loss else None
         seg_all = None
         if self.loss_weight == "len":
             pos = torch.nonzero(out.bpred[0].boundary_mask).squeeze(1)
@@ -407,6 +440,9 @@ class LatentObjective(nn.Module):
             l_tf = self.dist_fn(pred, tgt[j + 1]).mean()
         loss = self.beta_tf * l_tf
         st = {"lat/tf_l1": l_tf if self.dist == "l1" else (pred - tgt[j + 1]).abs().mean().detach()}
+        if l_byte is not None:
+            loss = loss + self.beta_byte * l_byte
+            st |= st_byte
         in_tgt = None
         if self.in_loss or (self.rollout is not None and self.rollout_feed == "in_head"):
             in_tgt = self.input_targets(model, out, x).float()

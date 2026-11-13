@@ -1,0 +1,6 @@
+# "Dechunk in latent space" (2026-11-12 ~22:50 PT): per-byte latent loss through confidence + smoothing, ratio weight
+# 0.03; and the same without smoothing. 2 seeds. Side queue: RUN_JOBS_MAX_PER_GPU=2 RUN_JOBS_MIN_FREE_GB=25.
+python -m latents.train configs/rdiag/r_byte.yaml name=RB-s0 train.seed=0
+python -m latents.train configs/rdiag/r_byte.yaml name=RB-s1 train.seed=1
+python -m latents.train configs/rdiag/r_byte_nosmooth.yaml name=RBN-s0 train.seed=0
+python -m latents.train configs/rdiag/r_byte_nosmooth.yaml name=RBN-s1 train.seed=1

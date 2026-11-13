@@ -246,6 +246,14 @@ def routing_losses(model, out, mc):
 _PREV_BND = {}  # boundary mask of the first val batch at the previous eval (router brief: boundaries that move)
 
 
+def participation_ratio(x):
+    """Effective rank (sum ev)^2 / sum ev^2 of the centred covariance of x (N, D)."""
+    with torch.autocast(device_type="cuda", enabled=False):
+        x = x.float() - x.float().mean(0)
+        ev = torch.linalg.eigvalsh(x.T @ x / max(x.shape[0] - 1, 1)).clamp(min=0)
+    return float(ev.sum() ** 2 / (ev.pow(2).sum() + 1e-12))
+
+
 @torch.no_grad()
 def evaluate(model, data, mc, tc, lat=None, max_windows=None, val=None, prefix="val"):
     """val / prefix: evaluate another byte stream (an extra validation set) and name its metrics <prefix>/..."""
@@ -262,13 +270,25 @@ def evaluate(model, data, mc, tc, lat=None, max_windows=None, val=None, prefix="
     lat_acc = {}
     p_hist = torch.zeros(10, dtype=torch.float64, device=DEV)  # histogram of the boundary probabilities p_t
     moved = None
+    rstats = {}  # router rank and cuts after whitespace, first val batch (router review 2026-11-12)
     ws = torch.tensor(WS_BYTES, device=DEV)
+    rm = getattr(getattr(model, "backbone", None), "routing_module", None)
     for i in range(0, len(mine), B):
         idx = mine[i:i + B]
         w = torch.stack([v[j * L: j * L + L + 1] for j in idx]).to(DEV)
         x, y = w[:, :-1], w[:, 1:]
+        cap = {}
+        hk = None
+        if i == 0 and rm is not None and hasattr(rm, "q_proj_layer"):
+            hk = rm.register_forward_pre_hook(lambda mod, args: cap.__setitem__("h", args[0].detach()))
         with autocast():
             out = model_forward(model, x, mc, lat)
+            if hk is not None:
+                hk.remove()
+            if "h" in cap:
+                h = cap["h"].reshape(-1, cap["h"].shape[-1])[:20000]
+                for nm, layer in (("q", rm.q_proj_layer), ("k", rm.k_proj_layer)):
+                    rstats[f"router_rank_{nm}"] = participation_ratio(layer(h.to(layer.weight.dtype)).float())
             if lat is not None:
                 for k, mval in lat.eval_metrics(model, out, x).items():
                     lat_acc[k] = lat_acc.get(k, 0.0) + mval
@@ -292,6 +312,9 @@ def evaluate(model, data, mc, tc, lat=None, max_windows=None, val=None, prefix="
             acc[4] += (b & edge).sum()
             acc[5] += isws.sum()
             acc[6] += (isws & (b | F.pad(b[:, 1:], (0, 1)))).sum()
+            if i == 0:
+                after_ws = F.pad(isws[:, :-1], (1, 0))
+                rstats["cuts_after_space"] = float((b & after_ws).sum() / b.sum().clamp(min=1))
     all_reduce_(acc)
     keys = sorted(lat_acc)
     if world > 1:
@@ -310,6 +333,8 @@ def evaluate(model, data, mc, tc, lat=None, max_windows=None, val=None, prefix="
             ph = p_hist / p_hist.sum().clamp(min=1)
             for k_ in range(10):
                 res[f"{prefix}/p_hist/{k_ / 10:.1f}"] = ph[k_].item()
+            for k_, v_ in rstats.items():
+                res[f"{prefix}/{k_}"] = v_
             if moved is not None:
                 res[f"{prefix}/bnd_moved"] = moved  # (added + removed boundaries) / previous boundaries, first val batch
     for k, val_ in zip(keys, lt[:-1].tolist()):
