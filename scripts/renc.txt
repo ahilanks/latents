@@ -1,0 +1,9 @@
+# Per-character latent target for the encoder (2026-11-12 ~23:55 PT): RE = enc_loss + anti-collapse 0.1 + ratio 0.03;
+# RE1 = the same with anti-collapse 1.0 (isolates the weaker anti-collapse). Then the leftover H-Net replicates.
+# Already running from r003b: RA003-s1, RBN-s0. Side queue: RUN_JOBS_MAX_PER_GPU=2 RUN_JOBS_MIN_FREE_GB=25.
+python -m latents.train configs/rdiag/r_enc.yaml name=RE-s0 train.seed=0
+python -m latents.train configs/rdiag/r_enc.yaml name=RE-s1 train.seed=1
+python -m latents.train configs/rdiag/r_enc_reg1.yaml name=RE1-s0 train.seed=0
+python -m latents.train configs/rdiag/r_enc_reg1.yaml name=RE1-s1 train.seed=1
+python -m latents.train configs/rdiag/h_nosmooth.yaml name=HX-nosmooth-s1 train.seed=1
+python -m latents.train configs/rdiag/h_base.yaml name=HX-base-s1 train.seed=1

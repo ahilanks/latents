@@ -1,0 +1,10 @@
+# Per-character latent target for the encoder (user, 2026-11-12 ~23:50 PT): rt4n6r + head(h_t) -> sg(EMA encoder state
+# at t+1), latent-only; anti-collapse 10x weaker (beta_reg 0.1); ratio-loss weight at H-Net's 0.03.
+base: router/rt4n6r.yaml
+group: rdiag
+model:
+  alpha: 0.03
+latent:
+  enc_loss: true
+  beta_enc: 1.0
+  beta_reg: 0.1

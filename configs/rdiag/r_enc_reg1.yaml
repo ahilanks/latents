@@ -1,0 +1,4 @@
+# r_enc with the anti-collapse term at its old strength (beta_reg 1.0): isolates the weaker anti-collapse. One change.
+base: rdiag/r_enc.yaml
+latent:
+  beta_reg: 1.0

@@ -133,6 +133,14 @@ class LatentObjective(nn.Module):
         # byte_rel: divide the per-byte loss by sg(mean distance between consecutive encoder states), so the encoder
         # cannot lower it by making consecutive states alike (which also removes the router's signal: no cuts)
         self.byte_rel = bool(lcfg.get("byte_rel", False))
+        # enc_loss (2026-11-12): a per-character latent target for the byte encoder. A small head reads the online
+        # encoder state h_t and predicts the EMA (slow) encoder's state at t+1 (stop-grad). Latent-only; gives the
+        # encoder a signal at every byte (otherwise it learns almost only from the anti-collapse term).
+        self.enc_loss = bool(lcfg.get("enc_loss", False))
+        self.beta_enc = float(lcfg.get("beta_enc", 1.0))
+        if self.enc_loss:
+            assert self.target == "ema", "enc_loss needs the EMA encoder (latent.target=ema)"
+            self.enc_head = make_head("mlp", D0, D0, dev)
         if self.byte_loss:
             self.byte_in = nn.Linear(D0, D0, device=dev)
             self.byte_head = make_head("mlp", D0, D0, dev)
@@ -399,6 +407,24 @@ class LatentObjective(nn.Module):
         d = pred - tgt
         return d.pow(2) if self.dist == "l2" else d.abs()
 
+    def encoder_next_loss(self, model, out, x, st):
+        """Per-character latent loss for the encoder (see enc_loss): head(h_t) -> sg(EMA encoder state at t+1)."""
+        ema = out.extras.get("ema_h")
+        if ema is None:
+            ema = self.ema_states(model, x)
+        ema = ema.float()
+        h = out.enc.float()
+        T0 = h.shape[0]
+        nxt = torch.ones(T0, dtype=torch.bool, device=h.device)
+        nxt[(out.cu0[1:] - 1).long()] = False
+        t = torch.nonzero(nxt).squeeze(1)
+        l = self.dist_fn(self.enc_head(h[t]), ema[t + 1]).mean()
+        with torch.no_grad():
+            st["lat/enc_l"] = l.detach()
+            st["lat/enc_copy"] = self.dist_fn(ema[t], ema[t + 1]).mean()  # baseline: next EMA state = this one
+            st["lat/enc_cos_next"] = F.cosine_similarity(h[t], h[t + 1], dim=-1).mean()  # shortcut watch
+        return l
+
     def byte_level_loss(self, model, out, pred_all, st):
         """Per-byte latent loss through H-Net's dechunk (see byte_loss in __init__). Byte t reads the smoothed output of
         the pieces that started at or before t (causal) plus its own encoder state, and predicts sg(enc_{t+1})."""
@@ -450,6 +476,9 @@ class LatentObjective(nn.Module):
         if l_byte is not None:
             loss = loss + self.beta_byte * l_byte
             st |= st_byte
+        if self.enc_loss:
+            l_enc = self.encoder_next_loss(model, out, x, st)
+            loss = loss + self.beta_enc * l_enc
         in_tgt = None
         if self.in_loss or (self.rollout is not None and self.rollout_feed == "in_head"):
             in_tgt = self.input_targets(model, out, x).float()
