@@ -796,3 +796,22 @@ gates and job files. ⚠️ R0 re-runs the hcD3 recipe first to confirm the refa
   | full mix + rollout `NM2` | 1.582 / 1.560 | 0.25–0.43 / 1.36–1.77 | 0.88 / 0.27 |
 
   Neither part alone unsettles the cuts; the combination does, and the second head prevents it. NMA-s1's web bpb (1.615) is an outlier (one seed).
+- **21:40 PT (2026-11-12) Why the learned-cut router is so firm (review of the cut-probability histogram; `scripts/router_diag.py` → `logs/router_diag.json`, `logs/router_logit_hist.png`; 4 web val windows, no training).**
+
+  | | web only `RT4n6r-s0` | math + 2nd head `NM1-s0` | math + rollout `NM2-s0` | normal H-Net, mix `NH0-s0` | normal H-Net, web `side-p06-plain-s0` |
+  |---|---|---|---|---|---|
+  | router projection rank q / k (participation ratio; h itself) | **1.0 / 1.2** (h 120) | **1.0 / 1.1** (105) | **1.0 / 1.5** (167) | 6.1 / 6.0 (63) | 9.7 / 8.6 (55) |
+  | cut rate / mean p | 0.172 / 0.183 | 0.171 / 0.179 | 0.168 / 0.210 | 0.207 / 0.347 | 0.196 / 0.385 |
+  | cuts on the byte after whitespace | 0.95 | 0.96 | 0.83 | 0.13 | 0.11 |
+  | whitespace followed by a cut (whitespace = 0.176 of bytes) | 0.93 | 0.93 | 0.79 | 0.16 | 0.12 |
+  | final cuts vs init cuts, F1 (chance ≈ 0.25) | 0.27 | 0.27 | 0.26 | 0.29 | 0.25 |
+  | router grad norm: latent loss as trained | 0.0085 | 0.0043 | 0.0048 | – | – |
+  | … next-byte loss, reopened via confidence / via smoothing | 0.0002 / 0.0001 | 0.0002 / 0.0001 | 0.0031 / 0.0001 | – | – |
+
+  - **Firmness = rank collapse of the router's projections.** q(h) and k(h) occupy about one direction, so after unit normalisation the cosine is ±1 and p is 0 or 1; the byte vectors h themselves are rich (rank 105–167). The router is a one-feature sign detector.
+  - **That feature is "previous byte was whitespace".** 95% of cuts are on the byte after a space and 93% of spaces are followed by one; the ratio target 1/6 = 0.167 sits next to the whitespace rate 0.176. The "learned word-level cuts" are a whitespace splitter.
+  - **Not fixed at initialisation** (identity projections cut 51% of bytes; final-vs-init F1 at chance). Firm by step 500, so chosen within the first 500 steps.
+  - **Reopening the blocked paths would add almost nothing:** the next-byte gradient reaching the router through the confidence scaling is 40× smaller than the latent loss's, and through the smoothing 85× smaller (rollout model: confidence 0.6× of latent). They carry the next-byte decoder loss, not the latent loss.
+  - Rollout model's 0.2–0.3 band (12% of bytes): 92% of it is the space character itself (one class of bytes, not softer decisions).
+  - Normal H-Net: cut rate 0.20–0.21 vs mean p 0.35–0.38 (ratio loss unmet), cut-side p median 0.51, so its "moderate" p sits on the threshold; projections rank 6–10.
+  - bf16 rounding caps |logit p| near 5–6 in the histograms.
