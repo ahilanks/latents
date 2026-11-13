@@ -1,0 +1,4 @@
+# Which part of the math mix breaks the word-level cuts? (m0_math lost them between steps 1000 and 1500, both seeds.)
+# m0_math with web + FineMath only (80/20, no synthetic chains). One change vs m0_math: the data.
+base: next/m0_math.yaml
+data_dir: data/fwe_finemath

@@ -1,0 +1,6 @@
+# Which part of the math mix breaks the word-level cuts (NM0 lost them at steps 1000-1500, both seeds)?
+# Side queue next to next_math_rollout.txt: run with RUN_JOBS_MAX_PER_GPU=0 so it only takes a free GPU.
+python -m latents.train configs/next/m0_finemath.yaml name=NMF-s0 train.seed=0
+python -m latents.train configs/next/m0_arith.yaml name=NMA-s0 train.seed=0
+python -m latents.train configs/next/m0_finemath.yaml name=NMF-s1 train.seed=1
+python -m latents.train configs/next/m0_arith.yaml name=NMA-s1 train.seed=1
