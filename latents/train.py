@@ -254,6 +254,62 @@ def participation_ratio(x):
     return float(ev.sum() ** 2 / (ev.pow(2).sum() + 1e-12))
 
 
+def world_size_1():
+    return dist_info()[1] == 1
+
+
+def grad_split(model, lat, mc, data, tc, n_windows=2):
+    """Gradient norm each latent term sends into the encoder (+ byte embeddings), the router and the main network, on
+    the first val windows (user, 2026-11-13: the prediction signal must not be swamped by the anti-collapse term).
+    Terms: main = next-piece latent prediction (+ second head if trained); reg = anti-collapse at its weight;
+    enc = per-character encoder target (enc_loss); byte = per-byte dechunk loss (byte_loss). Linear in the terms, so
+    reg = g(main+reg) - g(main) etc. Logged as grad/<term>/<group> and grad/ratio_main_over_reg/<group>."""
+    bb = model.backbone
+    groups = {"encoder": list(bb.encoder.parameters()) + list(model.embeddings.parameters()),
+              "router": list(bb.routing_module.parameters()),
+              "main": list(bb.main_network.parameters())}
+    flat = [p for ps in groups.values() for p in ps]
+    L = tc["seq_len"]
+    x = torch.from_numpy(data.val[: n_windows * L].reshape(n_windows, L).astype(np.int64)).to(DEV)
+    keep = dict(reg=lat.reg, enc=getattr(lat, "enc_loss", False), byte=getattr(lat, "byte_loss", False))
+
+    def grads(reg, enc, byte):
+        lat.reg = keep["reg"] if reg else "none"
+        lat.enc_loss, lat.byte_loss = enc, byte
+        with autocast():
+            out = model_forward(model, x, mc, lat)
+            loss, _ = lat.loss(model, out, x, step=10 ** 9, total_steps=10 ** 9)
+        gs = torch.autograd.grad(loss, flat, allow_unused=True)
+        return [torch.zeros_like(p) if g is None else g.float() for g, p in zip(gs, flat)]
+
+    def norms(gs):
+        res, i = {}, 0
+        for name, ps in groups.items():
+            res[name] = float(sum(g.pow(2).sum() for g in gs[i:i + len(ps)]) ** 0.5)
+            i += len(ps)
+        return res
+    out = {}
+    try:
+        g_main = grads(False, False, False)
+        parts = {"main": norms(g_main)}
+        if keep["reg"] != "none":
+            parts["reg"] = norms([a - b for a, b in zip(grads(True, False, False), g_main)])
+        if keep["enc"]:
+            parts["enc"] = norms([a - b for a, b in zip(grads(False, True, False), g_main)])
+        if keep["byte"]:
+            parts["byte"] = norms([a - b for a, b in zip(grads(False, False, True), g_main)])
+    finally:
+        lat.reg, lat.enc_loss, lat.byte_loss = keep["reg"], keep["enc"], keep["byte"]
+        model.zero_grad(set_to_none=True)
+    for t, d in parts.items():
+        for g, v in d.items():
+            out[f"grad/{t}/{g}"] = v
+    if "reg" in parts:
+        for g in groups:
+            out[f"grad/ratio_main_over_reg/{g}"] = parts["main"][g] / max(parts["reg"][g], 1e-12)
+    return out
+
+
 @torch.no_grad()
 def evaluate(model, data, mc, tc, lat=None, max_windows=None, val=None, prefix="val"):
     """val / prefix: evaluate another byte stream (an extra validation set) and name its metrics <prefix>/..."""
@@ -537,6 +593,8 @@ def main(argv):
             for nm, arr in data.extra.items():
                 ev.update(evaluate(model, data, mc, tc, lat=lat, max_windows=tc.get("extra_val_windows", 64), val=arr,
                                    prefix=f"val_{nm}"))
+            if lat is not None and is_hnet and world_size_1():
+                ev.update(grad_split(model, lat, mc, data, tc))
             ev["flops"] = cum_flops
             log(ev, step)
             if rank == 0:
