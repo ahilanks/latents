@@ -770,3 +770,17 @@ gates and job files. ⚠️ R0 re-runs the hcD3 recipe first to confirm the refa
     The ~26% of chunks at fixed places are near-identical across problems and form a shared direction that the decorrelation term pushes against; the router gradient drops 10×. Simple fix for the reasoning stage: leave the forced and row-start chunks out of the anti-collapse term (or pack problems).
   - Fix: `latents/__init__.py` transformers stub gains `PreTrainedTokenizerBase` (`datasets` streaming failed on it). FineMath mix built: `data/fwe_math` (3.4 GB). 0 of the 2000 test questions among the first 2M synthetic pretraining problems (seed 3).
 - **18:20 PT (2026-11-12) ⚠️ Math in pretraining breaks the word-level cuts (`NM0-s{0,1}` = rt4n6r on `data/fwe_math`).** Web bpb unchanged (1.565 / 1.584 vs 1.564 / 1.545 web-only); FineMath bpb 1.65 (web-only 2.36 / 2.27); synthetic chains 0.66 (5.19 / 4.95). But cuts at a word edge (web val) by eval step 500/1000/1500/2000/end: s0 0.96 0.89 0.38 0.27 0.30, s1 0.97 0.96 0.60 0.40 0.41 (web-only 0.95 / 0.89 at the end); cuts moved 1.4–1.6 per eval after step 1000 (web-only 0.16–0.26). Same on the chains (0.26 / 0.35 at word edges). Queued after the main queue: which part does it (`scripts/next_mix_split.txt`: `NMF` = web + FineMath 80/20, `NMA` = web + synthetic chains 95/5, two seeds; data `data/fwe_finemath`, `data/fwe_arith`). The main queue (second head, rollout, normal H-Net, all on the same mix) continues.
+- **20:10 PT (2026-11-12) Next round, main batch done (0.6B bytes, 2 seeds, paired with web-only `RT4n6r-s{0,1}`).**
+
+  | run | web bpb | FineMath bpb | chains bpb | cuts at word edge (web / FineMath / chains) | step-start cuts on the written reasoning (`cut_drift`) |
+  |---|---|---|---|---|---|
+  | web only `RT4n6r` s0 / s1 | 1.564 / 1.545 | 2.357 / 2.268 | 5.19 / 4.95 | 0.95 / 0.94 / 0.81 ; 0.89 / 0.88 / 0.79 | 0.68 / 0.69 |
+  | math mix `NM0` s0 / s1 | 1.565 / 1.584 | 1.651 / – | 0.658 / – | 0.30 / 0.32 / 0.26 ; 0.41 / – / 0.35 | 0.07 / 0.22 |
+  | **+ second head `NM1`** s0 / s1 | **1.562 / 1.552** | 1.647 / 1.651 | 0.619 / 0.613 | **0.95 / 0.91 / 0.68 ; 0.94 / 0.91 / 0.69** | **0.59 / 0.64** |
+  | + rollout 2→4→8 `NM2` s0 / s1 | 1.582 / 1.560 | | | 0.88 ; 0.27 (s1 broke at step 1500, horizon 4) | 0.04 / 0.06 |
+  | normal H-Net on the mix `NH0` s0 / s1 | 1.414 / 1.417 | | | 0.37 ; 0.47 | |
+  | normal H-Net web only `side-p06-plain-s0` | 1.373 | 1.906 | 4.28 | 0.24 / 0.30 / 0.21 | |
+
+  - The second head trained in pretraining keeps the word cuts on the math mix (both seeds; s1 dipped to 0.79 at step 1500 and recovered); without it they break after step 1000. Rollout as set up (fed-back second-head predictions, no detaching) loosens the cuts (s0) or breaks them (s1) once the horizon passes 2, and adds nothing to bpb. Rollout runs ~2 h each vs 13 min.
+  - Example (`cut_drift`, s0): web-only and NM1 `y=48. o|=48+13=61. p|=61-4=57. u|=57-56=1.` (identical); NM2 `y=4|8. |o=|48+1|3=61. p=61-4=57. |u=57-56=1|.`
+  - **Queued (`logs/jobs/e2e32_next.sh`, after the mix split):** end-to-end reasoning stage, same recipe as `e2e32_long.sh`, on `NM1-s{0,1}` and `RT4n6r-s{0,1}` (two per GPU, ~2.7 h). Trainer load checked on NM1 (3 steps).
