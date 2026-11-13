@@ -303,6 +303,10 @@ class LatentObjective(nn.Module):
         std = (x.pow(2).mean(0) + 1e-6).sqrt()
         st = {"lat/reg_std": std.mean().detach()}
         if self.reg == "sigreg":
+            with torch.no_grad(), torch.autocast(device_type=x.device.type, enabled=False):
+                xf = x.detach().float()
+                ev = torch.linalg.eigvalsh((xf.T @ xf) / max(xf.shape[0] - 1, 1)).clamp(min=0)
+                st["lat/participation"] = ev.sum() ** 2 / (ev.pow(2).sum() + 1e-12)
             return sigreg(x, seed=step), st
         g = self.gamma(std.mean(), step, total_steps)
         if g is None:

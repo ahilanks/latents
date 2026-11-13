@@ -1,0 +1,6 @@
+# Per-character encoder target with SIGReg (LeJEPA: Epps-Pulley test against N(0,1) on 64 random directions) instead
+# of VICReg as the anti-collapse term, weight 1.0; ratio 0.03. One change vs r_enc: the anti-collapse term.
+base: rdiag/r_enc.yaml
+latent:
+  reg: sigreg
+  beta_reg: 1.0

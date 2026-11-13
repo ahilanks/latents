@@ -1,0 +1,11 @@
+# SIGReg instead of VICReg under the per-character encoder target (user, 2026-11-13 ~00:50 PT), weights 0.05 and 1.0,
+# 2 seeds; gradient split logged per eval. Then the leftover VICReg runs (RE-s1, RE0-s1, RE1) and H-Net replicates.
+# Side queue: RUN_JOBS_MAX_PER_GPU=2 RUN_JOBS_MIN_FREE_GB=25.
+python -m latents.train configs/rdiag/r_enc_sig005.yaml name=RS005-s0 train.seed=0
+python -m latents.train configs/rdiag/r_enc_sig10.yaml name=RS10-s0 train.seed=0
+python -m latents.train configs/rdiag/r_enc_sig005.yaml name=RS005-s1 train.seed=1
+python -m latents.train configs/rdiag/r_enc_sig10.yaml name=RS10-s1 train.seed=1
+python -m latents.train configs/rdiag/r_enc.yaml name=RE-s1 train.seed=1
+python -m latents.train configs/rdiag/r_enc_reg1.yaml name=RE1-s0 train.seed=0
+python -m latents.train configs/rdiag/h_nosmooth.yaml name=HX-nosmooth-s1 train.seed=1
+python -m latents.train configs/rdiag/h_base.yaml name=HX-base-s1 train.seed=1
