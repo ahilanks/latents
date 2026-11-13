@@ -1,0 +1,4 @@
+# r_enc with NO anti-collapse term (beta_reg 0): EMA + stop-grad + predictor only, at both levels. One change vs r_enc.
+base: rdiag/r_enc.yaml
+latent:
+  beta_reg: 0.0

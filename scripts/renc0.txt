@@ -1,0 +1,3 @@
+# r_enc without the anti-collapse term (2026-11-13 ~00:05 PT). Side queue next to renc.txt (same sharing guard).
+python -m latents.train configs/rdiag/r_enc_reg0.yaml name=RE0-s0 train.seed=0
+python -m latents.train configs/rdiag/r_enc_reg0.yaml name=RE0-s1 train.seed=1
