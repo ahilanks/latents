@@ -755,3 +755,17 @@ gates and job files. ⚠️ R0 re-runs the hcD3 recipe first to confirm the refa
     - `m1_inhead` = + second head
     - `m2_roll` = + rollout 2 → 4 → 8, micro-batch 4
   - **Job file:** `scripts/next_math_rollout.txt` runs the diagnostic, the data prep, the old web-only runs scored on math, a 3-step full-size memory check at horizon 8, the 6 runs at 0.6B, and `cut_drift.py` (how each model cuts the written reasoning before any reasoning training). 82 CPU tests pass.
+- **17:56 PT (2026-11-12; 01:56 UTC 11-13) Anti-collapse diagnostic (`scripts/reg_diag.py`, `scripts/reg_diag_forced.py`) on `R4n6-3B-s0`. Started the next-round queue** (`scripts/next_math_rollout.txt`, + normal H-Net on the math mix `configs/next/h0_math_hnet.yaml` → `NH0-s{0,1}`).
+  - The blow-up is the **covariance (decorrelation) part**, not the variance floor: one problem per row 6.33 (local 11.0) vs web 0.06; variance part 0.08 vs 0.001. On one-problem rows ~all of the latent loss's gradient into router/encoder is this term (35.3 of 35.3 encoder; 250× its web size).
+  - The covariance is pooled over all chunks of the batch (only the centering is per row), so its noise floor is ≈ d/N = 256/chunks. Web: 0.06 / 0.42 / 1.53 at 8 KB / 1 KB / 256 B rows ≈ noise floor (0.05 / 0.37 / 1.44). Packed problems: 0.39 / 0.78 / 2.08 (≈ noise at 256 B rows, so short context is not the cause). Whole-batch centering on one-problem rows: 6.55 (no help).
+  - **Cause: the forced pieces.** One-problem rows (64 problems, 1004 chunks, noise 0.25):
+
+    | chunks in the term | share | cov part (input / local) | grad router | grad encoder |
+    |---|---|---|---|---|
+    | all | 1.00 | 6.33 / 11.0 | 1.14 | 35.3 |
+    | without row-start chunk | 0.94 | 3.89 / 7.84 | 1.02 | 29.9 |
+    | without forced cuts (ends of question / reasoning / answer and the chunk after) | 0.81 | 2.64 / 3.37 | 0.13 | 5.8 |
+    | without both | 0.74 | 0.70 / 1.28 | 0.11 | 4.1 |
+
+    The ~26% of chunks at fixed places are near-identical across problems and form a shared direction that the decorrelation term pushes against; the router gradient drops 10×. Simple fix for the reasoning stage: leave the forced and row-start chunks out of the anti-collapse term (or pack problems).
+  - Fix: `latents/__init__.py` transformers stub gains `PreTrainedTokenizerBase` (`datasets` streaming failed on it). FineMath mix built: `data/fwe_math` (3.4 GB). 0 of the 2000 test questions among the first 2M synthetic pretraining problems (seed 3).

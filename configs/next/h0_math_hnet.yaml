@@ -1,0 +1,9 @@
+# Reference for the next round: the normal H-Net of the same size (side-p06-plain: N5, main T7, no latent loss,
+# 0.6B bytes) trained on the SAME math mix as m0/m1/m2, so math and reasoning gains are not just the data.
+base: side/plain_N5_T7.yaml
+group: next-math
+data_dir: data/fwe_math
+train:
+  total_bytes: 6.0e+8
+  extra_val: {math: val_math.u8, arith: val_arith.u8}
+  extra_val_windows: 64

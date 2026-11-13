@@ -19,7 +19,8 @@ except Exception:
         sys.modules[name] = m
         return m
 
-    _mod("transformers")
+    # `datasets` checks pickled objects against transformers.PreTrainedTokenizerBase when transformers is imported
+    _mod("transformers", PreTrainedTokenizerBase=type("PreTrainedTokenizerBase", (), {}))
     _mod("transformers.generation",
          GreedySearchDecoderOnlyOutput=namedtuple("GreedySearchDecoderOnlyOutput", ["sequences", "scores"]),
          SampleDecoderOnlyOutput=namedtuple("SampleDecoderOnlyOutput", ["sequences", "scores"]),

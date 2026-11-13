@@ -6,7 +6,7 @@
 sh test -f data/task_arith/test.jsonl || python -m latents.tasks --out data/task_arith
 sh python scripts/reg_diag.py runs/R4n6-3B-s0 --n 512 --windows 16 > logs/reg_diag_R4n6-3B-s0.txt 2>&1
 sh test -f data/fwe_math/meta.json || python -m latents.prepare_math --out data/fwe_math --total 3.4e9 > logs/prepare_math.txt 2>&1
-sh python scripts/eval_extra_val.py runs/RT4n6r-s0 runs/RT4n6r-s1 --data data/fwe_math > logs/extra_val_RT4n6r.txt 2>&1
+sh python scripts/eval_extra_val.py runs/RT4n6r-s0 runs/RT4n6r-s1 runs/side-p06-plain-s0 --data data/fwe_math > logs/extra_val_RT4n6r.txt 2>&1
 # memory check of the 8-step horizon at full size (3 steps), stops the queue if it does not fit
 sh python -m latents.train configs/next/m2_roll.yaml name=preflight-m2-k8 train.steps=3 train.eval_every=2 train.eval_windows=2 train.final_eval_windows=2 train.extra_val_windows=2 train.final_extra_val_windows=2 latent.rollout_schedule=[[0,8]] wandb=false upload_hf=false > logs/preflight-m2-k8.log 2>&1
 python -m latents.train configs/next/m0_math.yaml name=NM0-s0 train.seed=0
@@ -15,6 +15,9 @@ python -m latents.train configs/next/m1_inhead.yaml name=NM1-s0 train.seed=0
 python -m latents.train configs/next/m1_inhead.yaml name=NM1-s1 train.seed=1
 python -m latents.train configs/next/m2_roll.yaml name=NM2-s0 train.seed=0
 python -m latents.train configs/next/m2_roll.yaml name=NM2-s1 train.seed=1
+# the normal H-Net of the same size on the same mix (reference)
+python -m latents.train configs/next/h0_math_hnet.yaml name=NH0-s0 train.seed=0
+python -m latents.train configs/next/h0_math_hnet.yaml name=NH0-s1 train.seed=1
 barrier
 # how each model cuts the written reasoning (no reasoning training yet): thoughts per problem, share of cuts on a
 # step's first letter, agreement with the web-only model
