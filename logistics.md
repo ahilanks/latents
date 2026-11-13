@@ -820,3 +820,22 @@ gates and job files. ⚠️ R0 re-runs the hcD3 recipe first to confirm the refa
   - **Ratio loss:** ours weight 1.0, N=6; H-Net 0.03 (our H-Net reference N=5, so its 0.20 cut rate is on target; mean p need not match the cut rate — the loss is linear in mean p with slope ∝ N·F−1, zero at F=1/N). User: weight 1.0 only forces frequency; go back toward 0.03 and fix the cause directly.
   - At low weight every past run drifted toward **no cuts** (RT2/RT3, RT2a, RT2w01, RT4n6w01 until 1500–2000). `scripts/cut_pressure.py` on RT4n6r-s0 (push on mean p, ×1e3, + = more cuts): latent loss ≈0 (per piece and per byte), anti-collapse +0.11 at init / +0.055 trained, ratio 0.03 −0.004 / −0.0001, ratio 1.0 −0.15 / −0.002. In the current recipe no term's gradient pushes toward fewer cuts at these two points; the old drift was in earlier recipes / dynamics.
   - **Queued (side queues next to the e2e runs, one extra job per GPU):** ratio-weight sweep `RA003/RA01/RA03-s{0,1}` (`scripts/rsweep.txt`; trainer now logs `val/router_rank_q`, `_k`, `val/cuts_after_space` at every eval); router LR warm-up `RX-lrwarm` and no router weight decay `RX-nowd` (`scripts/rdiag.txt`); **per-byte latent loss through dechunk** (`latent.byte_loss`: predictor piece outputs → H-Net dechunk with live p → × STE(confidence) + Linear(enc_t) → MLP → sg(enc_{t+1}); ratio 0.03) `RB-s{0,1}`, and without smoothing `RBN-s{0,1}` (`scripts/rbyte.txt`). Router gradient from the new term checked nonzero (0.010 at step 3 vs 0.134 for the rest of the latent loss).
+- **00:10 PT (2026-11-13) Ratio weight back toward 0.03: every variant loses its cuts** (0.6B web, router rank / cuts after space logged per eval).
+
+  | run (ratio weight) | cut rate by eval 500 / 1000 / 1500 / 2000 / end | router rank q/k (end) | web bpb | encoder: cos(h_t, h_t+1), relative change |
+  |---|---|---|---|---|
+  | rt4n6r (1.0) s0 | 0.17 throughout | 1.0 / 1.2 | 1.553 | 0.08, 1.35 |
+  | RA03-s0 (0.3) | 0.16 throughout | 1.0 / 1.55 | 1.606 | 0.14, 1.31 |
+  | RA01-s0 (0.1) | 0.001 / 0 / 0.004 / 0 / 0 | 1.3 / 1.3 | 1.639 | 0.86, 0.52 |
+  | RA003-s0 (0.03) | 0 / 0 / … / 0.004 | – | 1.644 | 0.56, 0.92 |
+  | RB-s0 (0.03 + per-byte latent loss) | 0 / 0.08 / 0 / 0 / 0 | 1.2 / 1.6 | 1.641 | 0.97, 0.24 |
+  | RB-s1 | 0.04 / 0.21 / 0 / 0 / 0.16 | 1.7 / 1.7 | 1.618 | 0.95, 0.29 |
+  | RBR-s0 (0.03 + per-byte loss relative to no-change) | 0.24 / 0.08 / 0 / 0 / 0.13 | 1.3 / 1.7 | 1.644 | 0.73, 0.73 |
+  | RBR-s1 | 0.53 / 0.07 / 0 / 0 / … | | | |
+  | router LR warm-up `RX-lrwarm-s0` (1.0) | firm and space-split by step 500 | 1.7 / 1.0 | 1.535 | |
+  | no router weight decay `RX-nowd-s0` (1.0) | 0.17 | 1.0 / 1.4 | 1.531 | |
+  | normal H-Net `side-p06-plain-s0` | 0.20 | 9.7 / 8.6 | 1.362 | 0.03, 1.39 |
+
+  - The router collapses to ~rank 1 at every weight, cutting or not: the ratio weight decides only whether it cuts. No weight in 0.03–1.0 gives a held count with a router of rank > 1 (seed 0).
+  - In every run that lost its cuts the encoder's consecutive states became alike (cos 0.56–0.97 vs 0.03–0.14 in runs that cut). The per-byte latent loss rewarded this directly (no-change distance 1.5 → 0.08 in RB-s0); dividing by the no-change distance (RBR) did not stop it, so another term drives it too. Cause vs effect of "no cuts" not settled.
+  - Normal H-Net without confidence gradient, seed 1 (`HX-noconf-s1`): replicates seed 0 (75% of p in 0.4–0.5, rank 9.7 / 6.1, bpb 1.366).
