@@ -784,3 +784,15 @@ gates and job files. ⚠️ R0 re-runs the hcD3 recipe first to confirm the refa
   - The second head trained in pretraining keeps the word cuts on the math mix (both seeds; s1 dipped to 0.79 at step 1500 and recovered); without it they break after step 1000. Rollout as set up (fed-back second-head predictions, no detaching) loosens the cuts (s0) or breaks them (s1) once the horizon passes 2, and adds nothing to bpb. Rollout runs ~2 h each vs 13 min.
   - Example (`cut_drift`, s0): web-only and NM1 `y=48. o|=48+13=61. p|=61-4=57. u|=57-56=1.` (identical); NM2 `y=4|8. |o=|48+1|3=61. p=61-4=57. |u=57-56=1|.`
   - **Queued (`logs/jobs/e2e32_next.sh`, after the mix split):** end-to-end reasoning stage, same recipe as `e2e32_long.sh`, on `NM1-s{0,1}` and `RT4n6r-s{0,1}` (two per GPU, ~2.7 h). Trainer load checked on NM1 (3 steps).
+- **20:30 PT (2026-11-12) Mix split (no second head), and cut stability for the whole round** (`val/bnd_moved` at evals 1500 / 2000 / end; user: word-edge share is descriptive, not a target — judge cuts by stability and the reasoning task).
+
+  | pretrain data | web bpb s0 / s1 | cuts moved between evals | word edges (end) |
+  |---|---|---|---|
+  | web only `RT4n6r` | 1.553 / 1.537 | 0.16–0.37 | 0.95 / 0.89 |
+  | web + FineMath 80/20 `NMF` | 1.573 / 1.551 | 0.18–0.35 | 0.90 / 0.94 |
+  | web + synthetic chains 95/5 `NMA` | 1.569 / 1.615 | 0.14–0.40 | 0.96 / 0.95 |
+  | full mix `NM0` | 1.566 / 1.584 | 0.99–1.58 (not settling) | 0.30 / 0.41 |
+  | full mix + second head `NM1` | 1.563 / 1.552 | 0.14–0.78, end 0.14 / 0.21 | 0.95 / 0.94 |
+  | full mix + rollout `NM2` | 1.582 / 1.560 | 0.25–0.43 / 1.36–1.77 | 0.88 / 0.27 |
+
+  Neither part alone unsettles the cuts; the combination does, and the second head prevents it. NMA-s1's web bpb (1.615) is an outlier (one seed).
