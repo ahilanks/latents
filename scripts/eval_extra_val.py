@@ -14,6 +14,8 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "scripts"))
 import latents  # noqa: E402,F401
 import numpy as np  # noqa: E402
+import torch  # noqa: E402
+from latents.models import build_model  # noqa: E402
 
 from latents import train as T  # noqa: E402
 from think_train import load  # noqa: E402
@@ -31,7 +33,15 @@ def main():
     dd = ROOT / a.data
     rows = {}
     for run in a.runs:
-        cfg, model, lat = load(ROOT / run if not Path(run).is_absolute() else run, T.DEV)
+        rd = ROOT / run if not Path(run).is_absolute() else Path(run)
+        ck = torch.load(rd / "final.pt", map_location="cpu", weights_only=False)
+        if "latent" in ck["cfg"]:
+            cfg, model, lat = load(rd, T.DEV)
+        else:  # normal H-Net (no latent objective)
+            cfg, lat = ck["cfg"], None
+            model = build_model(cfg["model"], device=T.DEV)
+            model.load_state_dict(ck["model"])
+        del ck
         mc, tc = cfg["model"], dict(cfg["train"])
         data = T.Data.__new__(T.Data)
         data.bpe, data.tok_bytes, data.bytes_per_token = False, None, 1.0
