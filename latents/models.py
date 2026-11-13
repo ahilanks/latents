@@ -204,6 +204,10 @@ def forward_lm(m: HNetForCausalLM, input_ids: torch.Tensor, pool_k: int = 0, det
     prob, sel = bp.boundary_prob, bp.selected_probs
     if detach_trunk:
         prob, sel = prob.detach(), sel.detach()
+    if not o.get("conf_grad", True):  # ablation: no gradient to p through the confidence scaling (forward unchanged)
+        sel = sel.detach()
+    if not o.get("smoothing", True):  # ablation: no smoothing between pieces (dechunk with p = 1: plain upsampling)
+        prob = torch.ones_like(prob)
     out = bb.dechunk_layer(zd, bp.boundary_mask, prob, cu1)
     hd = bb.residual_func(out.to(residual.dtype), residual, sel).to(out.dtype)
     if o.get("floor"):
@@ -219,7 +223,8 @@ def forward_opts(mc: dict, lat=None) -> dict:
     """Static forward options from the run config (the dynamic ones are added by model_forward)."""
     lc = lat.cfg if lat is not None else {}
     return dict(detach_trunk=bool(lc.get("detach_trunk", False)), floor=bool(mc.get("floor", False)),
-                pred_ste=lc.get("router_grad", "none") == "ste", chunk_pool=mc.get("chunk_pool", "hard"))
+                pred_ste=lc.get("router_grad", "none") == "ste", chunk_pool=mc.get("chunk_pool", "hard"),
+                conf_grad=bool(mc.get("conf_grad", True)), smoothing=bool(mc.get("smoothing", True)))
 
 
 def model_forward(model, x, mc: dict, lat=None, step_frac: float = 1.0) -> LMOut:
@@ -267,8 +272,10 @@ def param_groups(m: HNetForCausalLM, mc: dict, wd: float):
             continue
         lr_mult = _lr_mult(p, 1.0)
         no_decay = p.ndim < 2 or "embeddings" in name or "dec_emb" in name or "level_emb" in name
-        key = (lr_mult, no_decay)
-        groups.setdefault(key, {"params": [], "lr_mult": lr_mult, "weight_decay": 0.0 if no_decay else wd, "names": []})
+        router = "routing_module" in name  # own group: model.router_wd / train.router_lr_warm act on it
+        w = 0.0 if no_decay else (float(mc.get("router_wd", wd)) if router else wd)
+        key = (lr_mult, no_decay, router)
+        groups.setdefault(key, {"params": [], "lr_mult": lr_mult, "weight_decay": w, "names": [], "router": router})
         groups[key]["params"].append(p)
         groups[key]["names"].append(name)
     return list(groups.values()), mults

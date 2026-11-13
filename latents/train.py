@@ -444,8 +444,11 @@ def main(argv):
     for step in range(total_steps):
         lr_scale = wsd(step, total_steps, tc.get("warmup_frac", 0.1), tc.get("decay_frac", 0.2))
         lscale = latent_scale(lat, step, total_steps, tc.get("decay_frac", 0.2))
+        # train.router_lr_warm = f: the router's LR starts at 0.1x and ramps linearly to 1x over the first f of training
+        rw = float(tc.get("router_lr_warm", 0) or 0)
+        r_scale = 1.0 if rw <= 0 else 0.1 + 0.9 * min(1.0, step / (rw * total_steps))
         for pg, g in zip(opt.param_groups, groups):
-            pg["lr"] = tc["lr"] * g["lr_mult"] * lr_scale
+            pg["lr"] = tc["lr"] * g["lr_mult"] * lr_scale * (r_scale if g.get("router") else 1.0)
         x_all, y_all = next(it)
         stats = {}
         f_step = 0.0

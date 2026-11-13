@@ -1,0 +1,5 @@
+# Reverse ablation 2: normal H-Net without the smoothing between pieces (dechunk with p = 1, plain upsampling), so a
+# moderate p has no use in the forward pass. Does p harden?
+base: rdiag/h_base.yaml
+model:
+  smoothing: false

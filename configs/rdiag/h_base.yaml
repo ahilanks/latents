@@ -1,0 +1,6 @@
+# Router review (2026-11-12): the normal H-Net of the same size at 0.6B on web text (= side-p06-plain), the reference
+# for the two reverse ablations below.
+base: side/plain_N5_T7.yaml
+group: rdiag
+train:
+  total_bytes: 6.0e+8

@@ -1,0 +1,6 @@
+# Keep the learned-cut router from committing early: rt4n6r with the router's LR at 0.1x at the start, ramping to 1x
+# over the first 30% of training. One change vs rt4n6r.
+base: router/rt4n6r.yaml
+group: rdiag
+train:
+  router_lr_warm: 0.3

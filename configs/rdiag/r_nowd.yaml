@@ -1,0 +1,6 @@
+# Keep the router's projections from collapsing to rank 1: rt4n6r with no weight decay on the router's q/k projections
+# (decay toward 0 can erase every direction the gradient does not refresh). One change vs rt4n6r.
+base: router/rt4n6r.yaml
+group: rdiag
+model:
+  router_wd: 0.0

@@ -1,0 +1,5 @@
+# Reverse ablation 1: normal H-Net without the confidence signal (no gradient to p through the STE scaling of the
+# main network's output; forward unchanged). Does p harden?
+base: rdiag/h_base.yaml
+model:
+  conf_grad: false

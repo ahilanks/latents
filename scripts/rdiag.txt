@@ -1,0 +1,14 @@
+# Router review (2026-11-12 ~22:00 PT): reverse ablations in the normal H-Net, and two ways to keep the learned-cut
+# router from committing early / collapsing. 0.6B bytes web text, 2 seeds. Side queue next to the e2e reasoning runs:
+# RUN_JOBS_MAX_PER_GPU=2 RUN_JOBS_MIN_FREE_GB=25 (one extra job per GPU). side-p06-plain-s0 is the seed-0 H-Net reference.
+python -m latents.train configs/rdiag/h_noconf.yaml name=HX-noconf-s0 train.seed=0
+python -m latents.train configs/rdiag/h_nosmooth.yaml name=HX-nosmooth-s0 train.seed=0
+python -m latents.train configs/rdiag/r_lrwarm.yaml name=RX-lrwarm-s0 train.seed=0
+python -m latents.train configs/rdiag/r_nowd.yaml name=RX-nowd-s0 train.seed=0
+python -m latents.train configs/rdiag/h_noconf.yaml name=HX-noconf-s1 train.seed=1
+python -m latents.train configs/rdiag/h_nosmooth.yaml name=HX-nosmooth-s1 train.seed=1
+python -m latents.train configs/rdiag/r_lrwarm.yaml name=RX-lrwarm-s1 train.seed=1
+python -m latents.train configs/rdiag/r_nowd.yaml name=RX-nowd-s1 train.seed=1
+python -m latents.train configs/rdiag/h_base.yaml name=HX-base-s1 train.seed=1
+barrier
+sh python scripts/router_diag.py runs/side-p06-plain-s0 runs/HX-base-s1 runs/HX-noconf-s0 runs/HX-noconf-s1 runs/HX-nosmooth-s0 runs/HX-nosmooth-s1 runs/RT4n6r-s0 runs/RT4n6r-s1 runs/RX-lrwarm-s0 runs/RX-lrwarm-s1 runs/RX-nowd-s0 runs/RX-nowd-s1 --out logs/router_diag_rdiag.json > logs/router_diag_rdiag.txt 2>&1
