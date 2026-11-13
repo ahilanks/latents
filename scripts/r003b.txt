@@ -1,0 +1,8 @@
+# Ratio weight 0.03, continued (2026-11-12 ~23:20 PT). Already running from r003.txt: RB-s1, RA003-s0.
+# Relative per-byte loss first (RBR), then plain 0.03 seed 1, then the rest.
+python -m latents.train configs/rdiag/r_byte_rel.yaml name=RBR-s0 train.seed=0
+python -m latents.train configs/rdiag/r_byte_rel.yaml name=RBR-s1 train.seed=1
+python -m latents.train configs/rdiag/r_alpha003.yaml name=RA003-s1 train.seed=1
+python -m latents.train configs/rdiag/r_byte_nosmooth.yaml name=RBN-s0 train.seed=0
+python -m latents.train configs/rdiag/h_nosmooth.yaml name=HX-nosmooth-s1 train.seed=1
+python -m latents.train configs/rdiag/h_base.yaml name=HX-base-s1 train.seed=1

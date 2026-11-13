@@ -1,0 +1,6 @@
+# r_byte with the per-byte loss measured relative to the "no change" baseline (divided by the stop-grad mean distance
+# between consecutive encoder states). RB-s0 showed the encoder making consecutive states alike (copy distance 1.5 ->
+# 0.08), which lowered the loss and killed the cuts. One change vs r_byte.
+base: rdiag/r_byte.yaml
+latent:
+  byte_rel: true

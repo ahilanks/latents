@@ -1,0 +1,11 @@
+# Ratio weight 0.03 first (user, 2026-11-12 ~23:00 PT): per-byte latent loss (RB, already running RB-s0), plain 0.03
+# (RA003), per-byte loss without smoothing (RBN); then the rest of the normal-H-Net reverse ablations.
+# Dropped: RA01/RA03 second seeds, RX-lrwarm/RX-nowd second seeds (both failed on seed 0).
+# Side queue: RUN_JOBS_MAX_PER_GPU=2 RUN_JOBS_MIN_FREE_GB=25. HX-noconf-s1 is already running (orphaned from rdiag).
+python -m latents.train configs/rdiag/r_byte.yaml name=RB-s1 train.seed=1
+python -m latents.train configs/rdiag/r_alpha003.yaml name=RA003-s0 train.seed=0
+python -m latents.train configs/rdiag/r_alpha003.yaml name=RA003-s1 train.seed=1
+python -m latents.train configs/rdiag/r_byte_nosmooth.yaml name=RBN-s0 train.seed=0
+python -m latents.train configs/rdiag/r_byte_nosmooth.yaml name=RBN-s1 train.seed=1
+python -m latents.train configs/rdiag/h_nosmooth.yaml name=HX-nosmooth-s1 train.seed=1
+python -m latents.train configs/rdiag/h_base.yaml name=HX-base-s1 train.seed=1

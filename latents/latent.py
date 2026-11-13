@@ -130,6 +130,9 @@ class LatentObjective(nn.Module):
         self.byte_loss = bool(lcfg.get("byte_loss", False))
         self.beta_byte = float(lcfg.get("beta_byte", 1.0))
         self.byte_smooth = bool(lcfg.get("byte_smooth", True))
+        # byte_rel: divide the per-byte loss by sg(mean distance between consecutive encoder states), so the encoder
+        # cannot lower it by making consecutive states alike (which also removes the router's signal: no cuts)
+        self.byte_rel = bool(lcfg.get("byte_rel", False))
         if self.byte_loss:
             self.byte_in = nn.Linear(D0, D0, device=dev)
             self.byte_head = make_head("mlp", D0, D0, dev)
@@ -412,8 +415,12 @@ class LatentObjective(nn.Module):
         nxt[(out.cu0[1:] - 1).long()] = False  # the last byte of a row has no next byte in the row
         t = torch.nonzero(nxt).squeeze(1)
         l = self.dist_fn(pb[t], enc[t + 1].detach()).mean()
+        copy = self.dist_fn(enc[t], enc[t + 1]).mean().detach()  # baseline: predict "no change"
         st["lat/byte_l"] = l.detach()
-        st["lat/byte_copy"] = self.dist_fn(enc[t], enc[t + 1]).mean().detach()  # baseline: predict "no change"
+        st["lat/byte_copy"] = copy
+        if self.byte_rel:
+            l = l / copy.clamp(min=1e-6)
+            st["lat/byte_rel"] = l.detach()
         return l
 
     def loss(self, model, out, x, step=0, total_steps=1, scale=1.0, chunk_valid=None):
