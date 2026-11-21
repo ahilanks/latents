@@ -42,3 +42,8 @@ sh python scripts/coconut_eval.py runs/coco-rt --n 2000 > logs/coconut/coco-rt.t
 # Control for "do the thoughts help?" (user, 2026-11-20): the same curriculum and settings with NO thoughts (--c 0): the
 # steps are deleted but nothing is fed back; the model only has the <start> and <stop> positions (GPU 1, next to seed 1):
 #   python scripts/coconut_train.py --init runs/C-B1-plain-cot --name=coco-fresh2-nothoughts --c 0 --fresh 1 --ratio parts --stages 2 --stage_steps 20000 --eval_every 500 --advance_at 0.9
+# 2026-11-21 02:20 PT, overnight: does the second hidden calculation get learned at all in the setting that learned the
+# first one (byte-level restart, input-shaped feed, read-out from the last thought)? Both seeds continue from their
+# stage-2 checkpoints with a 40,000-step limit per stage (the first calculation took 11,500 and 16,500 steps):
+#   python scripts/coconut_train.py --init runs/coco-fresh2-in-long-stage2 --name=coco-fresh2-in-night --c 1 --read thought --feed input --fresh 1 --ratio parts --first_stage 3 --stages 7 --stage_steps 40000 --eval_every 1000 --advance_at 0.9
+#   python scripts/coconut_train.py --init runs/coco-fresh2-in-seed1-stage2 --name=coco-fresh2-in-seed1-night --seed 1 --c 1 --read thought --feed input --fresh 1 --ratio parts --first_stage 3 --stages 7 --stage_steps 40000 --eval_every 1000 --advance_at 0.9
