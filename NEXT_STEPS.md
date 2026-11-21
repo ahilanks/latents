@@ -114,6 +114,8 @@ Notes:
 
 ## How we climb
 
+> **Changed 2026-11-21: fast iteration first.** We are now exploring which directions work at all: one seed, the cheapest run that answers the question, and quick moves when something fails. The seed pairs, gates and replicates below apply only once a direction looks promising and we test it thoroughly.
+
 - **One change per rung.** Each rung is compared to the rung right before it.
 - **0.6B bytes, 2 seeds, compared paired by seed.** Runs take ~15 min. Latent runs at 0.6B differ by up to ~0.025 BPB between seeds, but recipe rankings have held across seeds.
 - **A neutral change** (expected to cost nothing) passes if the paired Δ is at most +0.03 BPB (`TOL` in `scripts/ladder.py`) and the latent-vs-copy ratio is at most 1.10× the rung below.
