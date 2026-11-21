@@ -1,0 +1,6 @@
+# Latent geometry check (no training, ~5 min on one GPU): is the predicted next-chunk latent a meaningful summary of
+# what could come next, or close to a constant? Run:  python scripts/run_jobs.py scripts/latent_geometry.txt
+# Needs from HF (final.pt each): runs/R4n6-3B-s0, runs/R4n6-3B-s1 (word cuts, latent-only, 3B), runs/L-M1-l2-s0 (fixed
+# 4-byte chunks, latent-only, 3B), runs/side-f3-latent-s1 (joint: trunk trained by bytes + the latent loss, 3B).
+sh mkdir -p logs/geometry
+sh python scripts/latent_geometry.py logs/geometry/geometry.json "word cuts s0=runs/R4n6-3B-s0" "word cuts s1=runs/R4n6-3B-s1" "fixed 4-byte=runs/L-M1-l2-s0" "joint=runs/side-f3-latent-s1" --windows 32 --plot logs/geometry/r2_by_direction.png > logs/geometry/geometry.txt 2>&1

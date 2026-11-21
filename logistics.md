@@ -847,3 +847,16 @@ gates and job files. ⚠️ R0 re-runs the hcD3 recipe first to confirm the refa
   - SIGReg instead of VICReg (user): at step 2 the main loss leads (3.7–3.8× SIGReg into the encoder at weights 0.05 and 1.0, vs VICReg 0.1 at 43× the main loss). But by step 1000 both collapse: 0.05 cuts 0.165 → 0.012, piece rank 17 → 7.7; 1.0 cuts dead, piece rank 9 → 4.7; predictor spread 0.003–0.09. Stopped (`RS005-s0`, `RS10-s0`; seed 1 not run).
   - Per-byte dechunk without smoothing `RBN-s0` and plain 0.03 `RA003-s1` finished (not yet read). Proposed next (waiting for the user): no-training check of why the next-piece predictor collapses to the mean (vs mean target, previous piece, more context) on RT4n6r-s0.
 - **01:20 PT (2026-11-13) Session end (user: commit, push, stop the pod).** Normal H-Net seed-1 replicates: as normal (`HX-base-s1`) router rank 8.6 / 8.3, bpb 1.378; no smoothing (`HX-nosmooth-s1`) 4.7 / 3.3, 30% of p < 0.1, bpb 1.390; no confidence (`HX-noconf-s1`) 9.7 / 6.1, bpb 1.366 (seed 0 replicated). **End-to-end reasoning runs `NM1-s{0,1}-think-e2e32-long`, `RT4n6r-s{0,1}-think-e2e32-long` cut off at step ~8,200 of 9,000 by the stop; their `-s3000` / `-s6000` checkpoints are in `runs/` on the volume; no final eval.** Open next: why the next-piece predictor collapses to the mean (no-training check on RT4n6r-s0 vs mean target, previous piece, more context).
+- **(2026-11-21, cloud session, no GPU) Latent geometry check, code only — not run yet** (`scripts/latent_geometry.py`, job file `scripts/latent_geometry.txt`, CPU test `tests/cpu/test_geometry.py`).
+  - **Question (user):** a latent should be able to hold "what could come next", several possibilities at once. With squared error the best prediction is the average latent of the possible next chunks, which is a meaningful summary only if the target space is arranged by meaning. Is ours?
+  - **Measures,** on web text and on the arithmetic chains (next step fully determined):
+    - how varied the predictions are vs the targets
+    - the share of the targets' variation the prediction explains, also after the best rescaling (right direction but shrunk?)
+    - the copy-previous-chunk baseline
+    - a fresh linear map from the predictor's features (is the information there but unused?)
+    - which of the targets' top-64 directions are predictable, and their share of the variation
+    - on web text: whether chunks of the same word have similar targets, whether the prediction's nearest word centroids rank the true next word in the top 1 / 10 (vs most-frequent words and vs a prediction from another position), nearest neighbours of probe words, and example contexts
+  - **How to read it:**
+    - **The diagnosis holds if:** web explained share and spread are small while the chains' are high, and most target variation lies in unpredictable directions. The forced spread is noise context can't predict.
+    - **Shrunk but meaningful (the user's view):** the linear map or the rescaled prediction explains much more than the head, or next-word top-10 is far above the most-frequent baseline.
+    - **The joint model is the control:** its trunk is trained by bytes. If its targets are more predictable or more word-like, the byte loss is what organises the space.
