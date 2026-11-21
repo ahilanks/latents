@@ -158,44 +158,51 @@ def thoughts():
 
 
 def versus():
-    """Is anything beating the plain H-Net? Reasoning accuracy on the 2000 test problems and web compression."""
-    plain = 100 * json.load(open(ROOT / "runs/C-B1-plain-cot/coconut_eval.json"))["written"]["acc"]
+    """Final scoreboard against the plain H-Net: reasoning at 3B bytes (2000 test problems) and web compression."""
+    def acc(run):
+        return 100 * json.load(open(ROOT / f"runs/{run}/coconut_eval.json"))["written"]["acc"]
+
+    def bpb(run):
+        return json.load(open(ROOT / f"runs/{run}/summary.json"))["val/bpb"]
     one = json.load(open(ROOT / "logs/coconut/one_hidden_2000.json"))
-    # logistics 2026-11-12: thoughts trained with per-step targets, cuts held (not end to end), every step a thought:
-    # 98.5 and 97.4 on one pretrained model, 11.8 on another
-    earlier = 98.5
-    bars = [("plain H-Net:\nwrites every step", plain, fs.GREY),
-            ("Coconut today:\none calculation\nhidden", 100 * one["runs/coco-c1q"]["acc"], fs.BLUE),
-            ("Coconut today:\none hidden, byte\nshortcut removed", 100 * one["runs/coco-fresh2-in-long-stage2"]["acc"], fs.BLUE),
-            ("12 Nov recipe: every\nstep a thought,\nper-step targets", earlier, fs.ORANGE)]
-    bpb = [("plain\nH-Net", "side-p06-plain-s0", fs.GREY), ("NextLat:\nbyte-space\nterm only", "NL-klonly-s0", fs.BLUE),
-           ("NextLat:\nlatent-space\nloss", "NL-h1-s0", fs.BLUE), ("NextLat:\nboth terms", "NL-h1kl-s0", fs.BLUE)]
-    vals = [json.load(open(ROOT / f"runs/{r}/summary.json"))["val/bpb"] for _, r, _ in bpb]
-    fig, axes = plt.subplots(1, 2, figsize=(11.0, 4.9), dpi=200, gridspec_kw=dict(width_ratios=[1.15, 1]))
-    used = fs.titles(fig, "Nothing from today beats the plain H-Net; the 12 Nov thought recipe did, on reasoning",
-                     "One seed each. The 12 Nov recipe held the cuts fixed (not end to end) and reached 98.5% and 97.4% on "
-                     "one pretrained model but 12% on another.")
-    fig.subplots_adjust(left=0.05, right=0.99, top=1 - used - 0.17, bottom=0.2, wspace=0.16)
+    plain = acc("C-B1-plain-cot")
+    # logistics 2026-11-12: thoughts with per-step targets, cuts held (not end to end): 98.5 / 97.4 on one pretrained
+    # model, 11.8 on another
+    bars = [("plain\nH-Net", plain, fs.GREY),
+            ("feedback:\ntrue loop", acc("LOOP-cot"), fs.BLUE),
+            ("feedback:\ntwo passes", acc("FB-cot-f3"), fs.BLUE),
+            ("NextLat,\nboth terms", acc("NLc-f3nlkl"), fs.BLUE),
+            ("Coconut: one\ncalculation\nhidden", 100 * one["runs/coco-c1q"]["acc"], fs.BLUE),
+            ("12 Nov recipe\n(cuts held,\nnot end to end)", 98.5, fs.ORANGE)]
+    comp = [("plain", bpb("side-p06-plain-s0"), fs.GREY, 0), ("NextLat,\nboth terms", bpb("NL-h1kl-s0"), fs.BLUE, 0),
+            ("feedback,\ntwo passes", bpb("FB-h-s0"), fs.BLUE, 0),
+            ("plain", bpb("side-f3-plain-s1"), fs.GREY, 1), ("NextLat,\nboth terms", bpb("NL3B-h1kl-s1"), fs.BLUE, 1)]
+    fig, axes = plt.subplots(1, 2, figsize=(12.0, 5.1), dpi=200, gridspec_kw=dict(width_ratios=[1.25, 1]))
+    used = fs.titles(fig, "Final: nothing from this session beats the plain H-Net at 3B bytes",
+                     "One run each. Left: 3B-byte models; the loop's own control (plain with the same extra training) scores "
+                     "93.2%. The 12 Nov recipe reached 98.5% and 97.4% on one pretrained model, 12% on another.")
+    fig.subplots_adjust(left=0.05, right=0.99, top=1 - used - 0.14, bottom=0.2, wspace=0.14)
     ax = axes[0]
     fs.axes_style(ax, 114, yticks=[0, 25, 50, 75, 100])
-    ax.set_xlim(-0.6, 3.6)
-    fs.columns(ax, range(4), [b[1] for b in bars], [b[2] for b in bars], width=0.26)
+    ax.set_xlim(-0.6, len(bars) - 0.4)
+    fs.columns(ax, range(len(bars)), [b[1] for b in bars], [b[2] for b in bars], width=0.3)
     ax.axhline(plain, color=fs.MUTED, lw=0.9, zorder=2)
-    ax.set_xticks(range(4))
-    ax.set_xticklabels([b[0] for b in bars], fontsize=8.8, color=fs.INK, linespacing=1.2)
-    ax.set_title("Reasoning task: final answer right\n(2,000 test problems, 3B-byte models)", fontsize=10, color=fs.INK2,
-                 loc="left", pad=10, linespacing=1.3)
+    ax.set_xticks(range(len(bars)))
+    ax.set_xticklabels([b[0] for b in bars], fontsize=8.6, color=fs.INK, linespacing=1.2)
+    ax.set_title("Reasoning: final answer right (2,000 test problems)", fontsize=10, color=fs.INK2, loc="left", pad=10)
     ax = axes[1]
     fs.axes_style(ax, 1.78, yticks=[0, 0.5, 1.0, 1.5], pct=False)
-    ax.set_xlim(-0.6, 3.6)
-    fs.columns(ax, range(4), vals, [b[2] for b in bpb], width=0.26, fmt="{:.3f}")
-    ax.axhline(vals[0], color=fs.MUTED, lw=0.9, zorder=2)
-    ax.set_xticks(range(4))
-    ax.set_xticklabels([b[0] for b in bpb], fontsize=8.8, color=fs.INK, linespacing=1.2)
-    ax.set_title("Web compression: bits per byte, lower is better\n(0.6B-byte models)", fontsize=10, color=fs.INK2,
-                 loc="left", pad=10, linespacing=1.3)
+    xs = [0, 1, 2, 3.6, 4.6]
+    ax.set_xlim(-0.6, xs[-1] + 0.6)
+    fs.columns(ax, xs, [c[1] for c in comp], [c[2] for c in comp], width=0.3, fmt="{:.3f}")
+    ax.set_xticks(xs)
+    ax.set_xticklabels([c[0] for c in comp], fontsize=8.6, color=fs.INK, linespacing=1.2)
+    ax.axvline(2.8, color=fs.GRID, lw=0.9)
+    ax.text(1.0, 1.74, "0.6B-byte models", ha="center", va="top", fontsize=9, color=fs.MUTED)
+    ax.text(4.1, 1.74, "3B-byte models", ha="center", va="top", fontsize=9, color=fs.MUTED)
+    ax.set_title("Web compression: bits per byte, lower is better", fontsize=10, color=fs.INK2, loc="left", pad=10)
     fig.savefig(OUT / "versus_plain.png")
-    print("wrote", OUT / "versus_plain.png", [round(b[1], 1) for b in bars], [round(v, 3) for v in vals])
+    print("wrote", OUT / "versus_plain.png", [round(b[1], 1) for b in bars], [round(c[1], 3) for c in comp])
 
 
 def nextlat_acc():
