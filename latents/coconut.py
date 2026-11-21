@@ -71,6 +71,8 @@ class Coconut:
         assert feed in ("full", "input") and read in ("stop", "thought")
         self.m, self.mc, self.c, self.feed, self.read, self.fresh = model, mc, int(c), feed, read, bool(fresh)
         self.ground = float(ground)
+        self.thought_byte_grad = True  # False: the byte loss does not reach back into the thoughts (they learn only from
+        #                                their chunk targets); a blocked path, i.e. the not-end-to-end comparison
         self.bb = model.backbone
         self.inner = self.bb.main_network
         self.iso = self.inner.main_network
@@ -192,7 +194,8 @@ class Coconut:
         nt = [thoughts[b].shape[0] for b in range(B)]
         # read="thought": the <stop> chunk (index qn) is left out of the main network and gets the output at the last thought
         skip = [1 if (self.read == "thought" and nt[b] > 0) else 0 for b in range(B)]
-        seqs = [torch.cat((rows[b][: qn[b]], thoughts[b].to(rows[b].dtype), rows[b][qn[b] + skip[b]:]), 0) for b in range(B)]
+        fed = thoughts if self.thought_byte_grad else [t.detach() for t in thoughts]
+        seqs = [torch.cat((rows[b][: qn[b]], fed[b].to(rows[b].dtype), rows[b][qn[b] + skip[b]:]), 0) for b in range(B)]
         # main-network positions that matter per row: its chunks that start inside the real bytes, plus its thoughts
         nreal = [int(mv[b, : len(byte_seqs[b])].sum()) + nt[b] - skip[b] for b in range(B)]
         z, zcu = self.run_main(seqs, valid=nreal)

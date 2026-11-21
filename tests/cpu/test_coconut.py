@@ -268,3 +268,31 @@ def test_grounded_thoughts_take_the_reasoning_chunks_as_count_and_target():
     assert all(p.grad is None or float(p.grad.abs().sum()) == 0 for p in bb.decoder.parameters())
     outs = co.answer(ps[:2], stage=None, max_new=8)
     assert [o[1] for o in outs] == [t.shape[0] for t in full[:2]]
+
+
+def test_chunk_only_grounding_blocks_the_byte_loss_from_the_thoughts():
+    """thought_byte_grad=False: the byte loss after thinking sends nothing back through the thoughts (they are constants
+    for it); the grounding loss still trains the main network through them."""
+    m, mc = make()
+    co = Coconut(m, mc, read="thought", feed="input")
+    ps = probs()
+    exs = [example(p, 2) for p in ps]
+
+    def byte_loss_grad_wrt_thoughts():
+        logits, _, _, th = co.forward([e[0] for e in exs], [e[1] for e in exs], [2] * len(ps))
+        for t in th:
+            t.retain_grad()
+        x = co.batch([e[0] for e in exs])
+        F.cross_entropy(logits[:, :-1].flatten(0, 1), x[:, 1:].flatten()).backward()
+        return sum(float(t.grad.abs().sum()) for t in th if t.grad is not None)
+    assert byte_loss_grad_wrt_thoughts() > 0
+    m.zero_grad()
+    co.thought_byte_grad = False
+    assert byte_loss_grad_wrt_thoughts() == 0
+    m.zero_grad()
+    cg = Coconut(m, mc, read="thought", feed="input", ground=1.0)
+    cg.thought_byte_grad = False
+    loss, st = cg.loss(ps, [2] * len(ps))
+    loss.backward()
+    assert float(st["ground_loss"]) > 0
+    assert sum(float(p.grad.abs().sum()) for p in m.backbone.main_network.parameters() if p.grad is not None) > 0

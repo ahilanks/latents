@@ -74,6 +74,9 @@ def main():
     ap.add_argument("--ground", type=float, default=0.0,
                     help="weight of the grounding loss: every thought is trained toward the latent of the reasoning chunk "
                          "it replaces (the model's own chunking of the written reasoning gives the thought count and targets)")
+    ap.add_argument("--thought_byte_grad", type=int, default=1,
+                    help="0: the byte loss does not reach back into the thoughts; with --ground they learn only from their "
+                         "chunk targets (a blocked path: the not-end-to-end comparison)")
     ap.add_argument("--stages", type=int, default=7, help="last stage (7 = every step of the longest training problem)")
     ap.add_argument("--stage_steps", type=int, default=500)
     ap.add_argument("--last_stage_extra", type=int, default=0, help="extra steps at the last stage")
@@ -106,6 +109,7 @@ def main():
         mc["feedback"] = {"mode": "loop"}
         attach_feedback(model, mc, dev)
     co = Coconut(model, mc, c=a.c, feed=a.feed, read=a.read, fresh=a.fresh, ground=a.ground)
+    co.thought_byte_grad = bool(a.thought_byte_grad)
     groups, _ = param_groups(model, mc, a.wd)
     rng = random.Random(1000 + a.seed)
     mix = random.Random(2000 + a.seed)
@@ -116,7 +120,7 @@ def main():
     run_dir.mkdir(parents=True, exist_ok=True)
     mlog = open(run_dir / "metrics.jsonl", "w")
     extra = dict(c=a.c, feed=a.feed, read=a.read, fresh=a.fresh, ratio=a.ratio, stages=a.stages, init=a.init, q_loss=a.q_loss,
-                 feedback=a.feedback, ground=a.ground)
+                 feedback=a.feedback, ground=a.ground, thought_byte_grad=a.thought_byte_grad)
     wb = None
     if a.wandb:
         try:  # never lose a run to a W&B problem

@@ -32,6 +32,7 @@ def main():
     ap.add_argument("--modes", default="all_thoughts,no_thoughts,written")
     ap.add_argument("--data_dir", default="data/task_arith")
     ap.add_argument("--batch", type=int, default=128)
+    ap.add_argument("--tag", default="", help="write coconut_eval_<tag>.json (e.g. another test set) instead of coconut_eval.json")
     a = ap.parse_args()
     dev = "cuda" if torch.cuda.is_available() else "cpu"
     run = a.run if Path(a.run).is_absolute() else str(ROOT / a.run)
@@ -60,7 +61,7 @@ def main():
         r = res[mode]
         print(f"{mode:13s} acc {r['acc']:.3f}  by steps {r['by_steps']}  thoughts {r['mean_thoughts']:.1f}  "
               f"bytes written {r['mean_bytes_written']:.1f}", flush=True)
-    json.dump(res, open(Path(run) / "coconut_eval.json", "w"), indent=1)
+    json.dump(res, open(Path(run) / (f"coconut_eval_{a.tag}.json" if a.tag else "coconut_eval.json"), "w"), indent=1)
 
 
 if __name__ == "__main__":

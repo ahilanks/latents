@@ -11,3 +11,9 @@ python -m latents.train configs/nextlat/arith_nl.yaml name=NLc-p06bnlkl model.ne
 python -m latents.train configs/nextlat/arith_nl.yaml name=NLc-f3nlkl model.nextlat.kl=1.0 train.init_from=runs/NL3B-h1kl-s1/final.pt train.micro_batch=16
 barrier
 sh for r in Cc-p06b NLc-p06bnlkl NLc-f3nlkl; do python scripts/coconut_eval.py runs/$r --n 2000 --modes written > logs/nextlat/written_$r.txt 2>&1; done
+# 2026-11-20: run by hand as two chains so the 0.6B pair does not wait for the 3B run:
+#   GPU 1: after NL-h1kl-s1: Cc-p06b, NLc-p06bnlkl, then their written-reasoning evals
+#   GPU 0: after NL3B-h1kl-s1: NLc-f3nlkl, then its eval
+# 2026-11-21 00:15 PT: second pretraining seed, first fine-tune seed: NextLat 81.5% vs plain 25.7% (the plain model writes
+# one step too many). Two more fine-tune seeds of each (GPU 1, by hand):
+#   for s in 1 2: Cc-p06b-s$s (train.seed=$s, from HX-base-s1), NLc-p06bnlkl-s$s (train.seed=$s, from NL-h1kl-s1), then evals

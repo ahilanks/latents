@@ -1,7 +1,7 @@
 """Summary figures of the 2026-11-20 session: one figure per finding, the main number readable at a glance.
 Reads the logged results (runs/*/metrics.jsonl, summary.json, coconut_eval.json, logs/nextlat/probe.json,
 logs/geometry/geometry.json, logs/coconut/exchange_*.json) and writes logs/figs/*.png.
-usage: python scripts/summary_figs.py [coconut] [exchange] [nextlat] [geometry] [carry] [thoughts] [versus] [nextlat_acc] [feedback_acc] [nextlat_seeds]      (default: the first four)
+usage: python scripts/summary_figs.py [coconut] [exchange] [nextlat] [geometry] [carry] [thoughts] [versus] [nextlat_acc] [feedback_acc] [nextlat_seeds] [scoreboard] [long_acc]      (default: the first four)
 """
 import json
 import sys
@@ -264,7 +264,7 @@ def feedback_acc():
               ("0.6B-byte models", [("plain H-Net, seed 0", "Cc-p06", fs.GREY), ("plain H-Net, seed 1", "Cc-p06-s1", fs.GREY),
                                     ("plain H-Net, seed 2", "Cc-p06-s2", fs.GREY), ("feedback, two passes", "FB-cot-p06", fs.BLUE)])]
     fig, axes = plt.subplots(1, 2, figsize=(11.4, 5.0), dpi=200, sharey=True)
-    used = fs.titles(fig, "Hidden-state feedback: the same as plain up to 6 steps; the 7-8-step problems decide, and they are noisy",
+    used = fs.titles(fig, "Hidden-state feedback, true loop or two passes: no gain over the plain H-Net on reasoning",
                      "Written-reasoning task, final answer right on 2,000 test problems, by problem length. One run per line; "
                      "the number in the legend is the overall score.")
     fig.subplots_adjust(left=0.055, right=0.985, top=1 - used - 0.11, bottom=0.12, wspace=0.08)
@@ -335,6 +335,89 @@ def nextlat_seeds():
     ax.set_title("By problem length", fontsize=10, color=fs.INK2, loc="left", pad=10)
     fig.savefig(OUT / "nextlat_seeds.png")
     print("wrote", OUT / "nextlat_seeds.png", [(n, [round(v[0], 1) for v in vals]) for n, vals, _ in res])
+
+
+def scoreboard():
+    """Are we beating the plain H-Net? NextLat with both terms against plain, pair by pair: reasoning and compression."""
+    def acc(run):
+        p = ROOT / f"runs/{run}/coconut_eval.json"
+        return 100 * json.load(open(p))["written"]["acc"] if p.exists() else None
+
+    def bpb(run):
+        p = ROOT / f"runs/{run}/summary.json"
+        return json.load(open(p))["val/bpb"] if p.exists() else None
+    pairs = [("0.6B bytes,\npretrained model A", ["Cc-p06", "Cc-p06-s1", "Cc-p06-s2"], ["NLc-p06nlkl", "NLc-p06nlkl-s1", "NLc-p06nlkl-s2"],
+              "side-p06-plain-s0", "NL-h1kl-s0"),
+             ("0.6B bytes,\npretrained model B", ["Cc-p06b", "Cc-p06b-s1", "Cc-p06b-s2"], ["NLc-p06bnlkl", "NLc-p06bnlkl-s1", "NLc-p06bnlkl-s2"],
+              "HX-base-s1", "NL-h1kl-s1"),
+             ("3B bytes", ["C-B1-plain-cot"], ["NLc-f3nlkl"], "side-f3-plain-s1", "NL3B-h1kl-s1")]
+    fig, axes = plt.subplots(1, 2, figsize=(11.2, 5.0), dpi=200, gridspec_kw=dict(width_ratios=[1.25, 1]))
+    used = fs.titles(fig, "NextLat (both loss terms) vs the plain H-Net: ahead on reasoning at 0.6B bytes, clearly behind at 3B",
+                     "Each pair is a plain and a NextLat model pretrained with the same seed. Dots are fine-tune seeds, bars their "
+                     "mean. Model B's plain version writes one step too many, hence its low score.")
+    fig.subplots_adjust(left=0.055, right=0.985, top=1 - used - 0.13, bottom=0.17, wspace=0.16)
+    for ax, kind in zip(axes, ("acc", "bpb")):
+        if kind == "acc":
+            fs.axes_style(ax, 114, yticks=[0, 25, 50, 75, 100])
+        else:
+            fs.axes_style(ax, 1.78, yticks=[0, 0.5, 1.0, 1.5], pct=False)
+        ax.set_xlim(-0.6, len(pairs) - 0.4)
+        for i, (name, plain, nl, pp, pn) in enumerate(pairs):
+            for off, runs, pre, col in ((-0.17, plain, pp, fs.GREY), (0.17, nl, pn, fs.AQUA)):
+                vals = [v for v in ([acc(r) for r in runs] if kind == "acc" else [bpb(pre)]) if v is not None]
+                if not vals:
+                    ax.text(i + off, (4 if kind == "acc" else 0.06), "running", ha="center", va="bottom", fontsize=8.5, color=fs.MUTED,
+                            rotation=90)
+                    continue
+                m = sum(vals) / len(vals)
+                fs.columns(ax, [i + off], [m], col, width=0.26, labels=[""])
+                if kind == "acc" and len(vals) > 1:
+                    for j, v in enumerate(vals):
+                        ax.plot([i + off - 0.07 + 0.07 * j], [v], "o", ms=5.5, color=fs.INK, mec=fs.SURFACE, mew=1.2, zorder=5)
+                ax.text(i + off, max(vals) + (3.5 if kind == "acc" else 0.03), f"{m:.1f}%" if kind == "acc" else f"{m:.3f}", ha="center",
+                        va="bottom", fontsize=9.5, fontweight="bold", color=fs.INK)
+        ax.set_xticks(range(len(pairs)))
+        ax.set_xticklabels([p[0] for p in pairs], fontsize=9, color=fs.INK, linespacing=1.2)
+        ax.set_title("Reasoning: final answer right (2,000 test problems)" if kind == "acc" else
+                     "Web compression: bits per byte, lower is better", fontsize=10, color=fs.INK2, loc="left", pad=10)
+    fs.legend(axes[1], [(fs.GREY, "plain H-Net"), (fs.AQUA, "NextLat, both terms")], loc="upper right", bbox_to_anchor=(1.0, 1.02))
+    fig.savefig(OUT / "scoreboard.png")
+    print("wrote", OUT / "scoreboard.png")
+
+
+def long_acc():
+    """Written reasoning on problems of 2-12 steps (trained on 2-6): plain, plain with extra training, loop, two passes."""
+    def ev(run):
+        p = ROOT / f"runs/{run}/coconut_eval_long.json"
+        if not p.exists():
+            return None
+        e = json.load(open(p))["written"]
+        ks = sorted(int(k) for k in e["by_steps"])
+        return 100 * e["acc"], ks, [100 * e["by_steps"][str(k)] for k in ks]
+    runs = [("plain H-Net", "C-B1-plain-cot", fs.GREY), ("plain, same extra training as the loop", "PLAIN-cot-more", fs.MUTED),
+            ("feedback, true loop", "LOOP-cot", fs.ORANGE), ("feedback, two passes", "FB-cot-f3", fs.BLUE)]
+    fig, ax = plt.subplots(figsize=(8.4, 5.0), dpi=200)
+    used = fs.titles(fig, "On longer problems the feedback models fall off sooner than the plain H-Net",
+                     "Written-reasoning task, final answer right, 200 test problems per length; 3B-byte models trained on "
+                     "problems of 2-6 steps. One run each; the number in the legend is the overall score.")
+    fig.subplots_adjust(left=0.08, right=0.985, top=1 - used - 0.05, bottom=0.12)
+    fs.axes_style(ax, 108, yticks=[0, 25, 50, 75, 100])
+    from matplotlib.lines import Line2D
+    hs = []
+    for name, run, col in runs:
+        r = ev(run)
+        if r is None:
+            continue
+        ax.plot(r[1], r[2], color=col, lw=2, marker="o", ms=5.5, mec=fs.SURFACE, mew=1.2, zorder=3, solid_capstyle="round")
+        hs.append(Line2D([0], [0], color=col, lw=2, marker="o", ms=5.5, label=f"{name}: {fs.num(r[0])}"))
+    ax.axvspan(6.5, 12.4, color=fs.GRID, alpha=0.45, lw=0, zorder=0)
+    ax.text(9.45, 104, "longer than in training", ha="center", va="top", fontsize=8.5, color=fs.MUTED)
+    ax.set_xlim(1.6, 12.4)
+    ax.set_xticks(range(2, 13))
+    ax.set_xlabel("calculation steps in the problem")
+    ax.legend(handles=hs, frameon=False, fontsize=9, labelcolor=fs.INK2, loc="lower left", bbox_to_anchor=(0.0, 0.02))
+    fig.savefig(OUT / "long_problems.png")
+    print("wrote", OUT / "long_problems.png")
 
 
 def stage_evals(runs, stage):

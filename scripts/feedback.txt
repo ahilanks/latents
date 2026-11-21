@@ -20,3 +20,11 @@ sh for r in FB-cot-f3 FB-cot-p06; do python scripts/coconut_eval.py runs/$r --n 
 #   python scripts/coconut_train.py --init runs/C-B1-plain-cot --name=LOOP-cot --feedback loop --first_stage 0 --stages 0 --stage_steps 1500 --eval_every 500
 #   python scripts/coconut_train.py --init runs/C-B1-plain-cot --name=PLAIN-cot-more --first_stage 0 --stages 0 --stage_steps 1500 --eval_every 500
 #   for r in LOOP-cot PLAIN-cot-more; do python scripts/coconut_eval.py runs/$r --n 2000 --modes written > logs/feedback/written_$r.txt; done
+# 2026-11-21 (user: feedback still below plain? try bigger reasoning / longer steps). Written reasoning is at 100% for
+# plain on the trained lengths, so two harder tests:
+#  a) longer problems (2-12 steps, data/task_arith_long, 200 per length), no training:
+#       for r in C-B1-plain-cot PLAIN-cot-more LOOP-cot FB-cot-f3; do python scripts/coconut_eval.py runs/$r --n 2200 --modes written --data_dir data/task_arith_long --tag long > logs/feedback/long_$r.txt; done
+#  b) answering directly, no written reasoning and no thoughts (--c 0, every step deleted): the running value has to be
+#     tracked while the question is read. Plain vs loop, from the 3B written-reasoning model, one problem per row:
+#       python scripts/coconut_train.py --init runs/C-B1-plain-cot --name=coco-direct-plain --c 0 --ratio parts --first_stage 7 --stages 7 --stage_steps 6000 --eval_every 500 --advance_at 0.9
+#       python scripts/coconut_train.py --init runs/C-B1-plain-cot --name=coco-direct-loop --feedback loop --c 0 --ratio parts --first_stage 7 --stages 7 --stage_steps 6000 --eval_every 500 --advance_at 0.9

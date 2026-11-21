@@ -12,3 +12,7 @@
 # Started by hand, one per GPU:
 #   python scripts/coconut_train.py --init runs/C-B1-plain-cot --name=coco-ground --ground 1 --read thought --feed input --ratio parts --stages 7 --stage_steps 4000 --eval_every 250 --advance_at 0.9
 #   python scripts/coconut_train.py --init runs/C-B1-plain-cot --name=coco-ground-all --ground 1 --read thought --feed input --fresh 1 --ratio parts --first_stage 7 --stages 7 --stage_steps 6000 --eval_every 500 --advance_at 0.9
+# 2026-11-21 (user: "grounding on chunks but not bytes"): the thoughts learn only from their chunk targets; the byte loss
+# after thinking does not reach back into them (--thought_byte_grad 0; a blocked path = the not-end-to-end comparison
+# of coco-ground). coco-ground-all was stopped at 3000 steps (answers 2-3%, thoughts explain 27% of their targets).
+#   python scripts/coconut_train.py --init runs/C-B1-plain-cot --name=coco-ground-chunks --ground 1 --thought_byte_grad 0 --read thought --feed input --ratio parts --stages 7 --stage_steps 4000 --eval_every 250 --advance_at 0.9
