@@ -1,0 +1,6 @@
+# NextLat with both terms (latent-space loss + KL) on the 3B normal H-Net (= side/plain_N5_T7 + the two losses), to
+# compare on the reasoning task with the 3B plain H-Net (side-f3-plain-s1 -> C-B1-plain-cot, 94.7%).
+base: side/plain_N5_T7.yaml
+group: nextlat
+model:
+  nextlat: {weight: 1.0, kl: 1.0, horizon: 1, hidden: 1024, layers: 3}

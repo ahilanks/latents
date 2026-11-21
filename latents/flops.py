@@ -98,6 +98,8 @@ def step_train_flops(mc, out, lat=None, nest=None):
     T1 = out.chunks.shape[0]
     main_tok = layout_fwd(main, d1, causal_mean_ctx(T1 / B, win[1]), di1, sk)
     fwd = B * L * outer + T1 * main_tok
+    if mc.get("feedback"):  # hidden-state feedback: the main network runs `passes` times
+        fwd += (int(mc["feedback"].get("passes", 2)) - 1) * T1 * main_tok
     ema = 0.0
     if lat is not None:
         hk = lat.cfg.get("head", "linear")

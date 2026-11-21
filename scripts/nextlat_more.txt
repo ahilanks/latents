@@ -1,0 +1,13 @@
+# NextLat with both terms looked promising on reasoning (2026-11-20, 0.6B, three fine-tune seeds each: 93.2 / 92.6 / 92.5
+# vs plain 84.2 / 88.8 / 85.0). Thorough checks:
+#   a second PRETRAINING seed at 0.6B (NL-h1kl-s1 vs the normal H-Net HX-base-s1), each fine-tuned on written reasoning
+#   the 3B scale (NL3B-h1kl-s1 vs side-f3-plain-s1 -> C-B1-plain-cot, 94.7%)
+# Run:  python scripts/run_jobs.py scripts/nextlat_more.txt --gpus 1,0
+python -m latents.train configs/nextlat/h_nl_kl.yaml name=NL-h1kl-s1 train.seed=1 train.eval_every=500
+python -m latents.train configs/nextlat/h3b_nl_kl.yaml name=NL3B-h1kl-s1 train.seed=1
+python -m latents.train configs/task/arith_plain.yaml name=Cc-p06b train.init_from=runs/HX-base-s1/final.pt train.micro_batch=16
+barrier
+python -m latents.train configs/nextlat/arith_nl.yaml name=NLc-p06bnlkl model.nextlat.kl=1.0 train.init_from=runs/NL-h1kl-s1/final.pt train.micro_batch=16
+python -m latents.train configs/nextlat/arith_nl.yaml name=NLc-f3nlkl model.nextlat.kl=1.0 train.init_from=runs/NL3B-h1kl-s1/final.pt train.micro_batch=16
+barrier
+sh for r in Cc-p06b NLc-p06bnlkl NLc-f3nlkl; do python scripts/coconut_eval.py runs/$r --n 2000 --modes written > logs/nextlat/written_$r.txt 2>&1; done

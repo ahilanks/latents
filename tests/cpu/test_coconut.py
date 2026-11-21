@@ -237,3 +237,34 @@ def test_ratio_loss_per_part():
     assert abs(float(st_row["ce"]) - float(st_parts["ce"])) < 1e-6 and float(st_row["ratio_loss"]) != float(st_parts["ratio_loss"])
     l_parts.backward()
     assert sum(float(p.grad.abs().sum()) for p in m.backbone.routing_module.parameters() if p.grad is not None) > 0
+
+
+def test_grounded_thoughts_take_the_reasoning_chunks_as_count_and_target():
+    """ground > 0: one thought per chunk of the deleted reasoning (the model's own chunking of the written example), each
+    trained toward that chunk's latent; the target is a constant, the loss reaches the main network through the thoughts,
+    and generation uses the same count."""
+    m, mc = make()
+    co = Coconut(m, mc, read="thought", feed="input", ground=1.0)
+    ps = probs()
+    tg = co.reasoning_chunks(ps, [2] * len(ps))
+    assert all(t.ndim == 2 and t.shape[1] == mc["d_model"][0] and not t.requires_grad for t in tg)
+    full = co.reasoning_chunks(ps, [99] * len(ps))
+    assert all(f.shape[0] >= t.shape[0] for f, t in zip(full, tg)) and sum(f.shape[0] for f in full) > sum(t.shape[0] for t in tg)
+    assert all(t.shape[0] == 0 for t in co.reasoning_chunks(ps, [0] * len(ps)))
+    loss, st = co.loss(ps, [2] * len(ps))
+    assert abs(float(st["thoughts"]) - sum(t.shape[0] for t in tg) / len(ps)) < 1e-6 and float(st["ground_loss"]) > 0
+    l0, _ = Coconut(m, mc, read="thought", feed="input").loss(ps, [2] * len(ps))
+    m.zero_grad()
+    (loss - 0).backward()
+    bb = m.backbone
+    assert sum(float(p.grad.abs().sum()) for p in bb.main_network.parameters() if p.grad is not None) > 0
+    # the grounding term alone still trains the main network and the encoder inputs it reads, not the decoder
+    m.zero_grad()
+    exs = [example(p, 2) for p in ps]
+    _, _, _, th = co.forward([e[0] for e in exs], [e[1] for e in exs], [t.shape[0] for t in tg])
+    pr = torch.cat([t[:, : mc["d_model"][0]] for t in th])
+    F.smooth_l1_loss(pr, torch.cat(tg)).backward()
+    assert sum(float(p.grad.abs().sum()) for p in bb.main_network.parameters() if p.grad is not None) > 0
+    assert all(p.grad is None or float(p.grad.abs().sum()) == 0 for p in bb.decoder.parameters())
+    outs = co.answer(ps[:2], stage=None, max_new=8)
+    assert [o[1] for o in outs] == [t.shape[0] for t in full[:2]]

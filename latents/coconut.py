@@ -28,6 +28,11 @@ fresh = True     the byte-level encoder and decoder restart at <start>: their ow
                  question's chunks and to the thoughts). Without it the hidden value is produced jointly by the main
                  network's output and the byte-level path (2026-11-20: exchanging only the read-out state between
                  problems gives neither problem's value), so no thought ever holds a complete result.
+ground > 0       every thought has a target: the latent of the reasoning chunk it replaces. The full written example is
+                 chunked by the model itself (a second, plain encoder pass); the chunks that begin inside the deleted
+                 steps give both the NUMBER of thoughts and, one by one, their targets (the encoder's chunk vectors,
+                 constants for the gradient). Loss: ground x SmoothL1(thought, target) next to the byte loss. At test
+                 time the count is still taken from the true reasoning's chunking (an oracle count, to be replaced).
 1-level H-Nets with a learned (or fixed-chunk) router, no latent objective needed.
 """
 import torch
@@ -61,10 +66,11 @@ def example(p, stage, c=1):
 
 
 class Coconut:
-    def __init__(self, model, mc, c=1, feed="full", read="stop", fresh=False):
+    def __init__(self, model, mc, c=1, feed="full", read="stop", fresh=False, ground=0.0):
         assert not mc.get("nest"), "1-level H-Nets only"
         assert feed in ("full", "input") and read in ("stop", "thought")
         self.m, self.mc, self.c, self.feed, self.read, self.fresh = model, mc, int(c), feed, read, bool(fresh)
+        self.ground = float(ground)
         self.bb = model.backbone
         self.inner = self.bb.main_network
         self.iso = self.inner.main_network
@@ -85,10 +91,11 @@ class Coconut:
             x[i, :len(s)] = torch.tensor(list(s), device=x.device)
         return x
 
-    def run_main(self, seqs):
+    def run_main(self, seqs, valid=None):
         lens = [s.shape[0] for s in seqs]
         cu = torch.tensor([0] + lens, device=seqs[0].device).cumsum(0).to(torch.int32)
-        return self.iso(torch.cat(seqs, 0), cu_seqlens=cu, max_seqlen=max(lens)), cu
+        from latents.models import main_pass  # the same main-network pass as forward_lm (hidden-state feedback included)
+        return main_pass(self.m, torch.cat(seqs, 0), cu, max(lens), valid=valid), cu
 
     def thought_of(self, z_last):
         """The next input made from a main-network output (D1)."""
@@ -122,6 +129,30 @@ class Coconut:
             sel[force] = 1.0
             bp = RoutingModuleOutput(boundary_prob=prob, boundary_mask=mask, selected_probs=sel)
         return h, cu, bp
+
+    # ------------------------------------------------------------------ grounding: the reasoning's own chunk latents
+    @torch.no_grad()
+    def reasoning_chunks(self, probs, stages):
+        """Per problem: the encoder's chunk vectors (n, D0) of the chunks that begin inside the steps deleted at its
+        stage, from the model's own chunking of the full written example (no markers, no thoughts)."""
+        seqs, spans_b = [], []
+        for p, st in zip(probs, stages):
+            q = bytes([BOS]) + p["q"].encode()
+            spans = step_spans(p["cot"])
+            k = min(st, len(spans))
+            cut = 0 if k == 0 else (spans[k][0] if k < len(spans) else len(p["cot"]))
+            seqs.append(q + (p["cot"] + p["answer"]).encode())
+            spans_b.append((len(q), len(q) + cut))
+        x = self.batch(seqs)
+        B, L = x.shape
+        h, cu, bp = self.encode(x, torch.zeros(0, dtype=torch.long, device=x.device))
+        hc, cu1, _, _ = self.bb.chunk_layer(h, bp.boundary_mask, cu)
+        mv = bp.boundary_mask.view(B, L)
+        out = []
+        for b, (lo, hi) in enumerate(spans_b):
+            first = int(cu1[b]) + int(mv[b, :lo].sum())
+            out.append(hc[first: first + int(mv[b, lo:hi].sum())].float())
+        return out
 
     # ------------------------------------------------------------------ thoughts and the forward with them
     def thoughts(self, prefixes, ns):
@@ -162,7 +193,9 @@ class Coconut:
         # read="thought": the <stop> chunk (index qn) is left out of the main network and gets the output at the last thought
         skip = [1 if (self.read == "thought" and nt[b] > 0) else 0 for b in range(B)]
         seqs = [torch.cat((rows[b][: qn[b]], thoughts[b].to(rows[b].dtype), rows[b][qn[b] + skip[b]:]), 0) for b in range(B)]
-        z, zcu = self.run_main(seqs)
+        # main-network positions that matter per row: its chunks that start inside the real bytes, plus its thoughts
+        nreal = [int(mv[b, : len(byte_seqs[b])].sum()) + nt[b] - skip[b] for b in range(B)]
+        z, zcu = self.run_main(seqs, valid=nreal)
         idx = []  # per real chunk, its position in the main-network sequence
         for b in range(B):
             o = int(zcu[b])
@@ -189,7 +222,10 @@ class Coconut:
         after thinking (coco-fresh, 2026-11-20: question cut rate 0.135 -> 0.03 in 1300 steps with "row")."""
         exs = [example(p, s, self.c) for p, s in zip(probs, stages)]
         byte_seqs = [e[0] for e in exs]
-        logits, bp, real, _ = self.forward(byte_seqs, [e[1] for e in exs], [e[3] for e in exs])
+        targets = self.reasoning_chunks(probs, stages) if self.ground > 0 else None
+        if targets is not None:  # one thought per chunk of the deleted reasoning
+            exs = [(e[0], e[1], e[2], t.shape[0] if e[1] > 0 else 0) for e, t in zip(exs, targets)]
+        logits, bp, real, th = self.forward(byte_seqs, [e[1] for e in exs], [e[3] for e in exs])
         B, L, V = logits.shape
         x = self.batch(byte_seqs)
         pos = torch.arange(L - 1, device=x.device)[None, :]
@@ -213,9 +249,19 @@ class Coconut:
         l_ratio = 0.5 * (ratio_of(mq) + ratio_of(real & ~mq)) if ratio == "parts" else ratio_of(real)
         a = float(self.mc.get("alpha", 0.03) if alpha is None else alpha)
         cut_q = bm[mq].float().mean()
-        return l_byte + a * l_ratio, {"ce": l_ce.detach(), "ce_question": l_q.detach(), "ratio_loss": l_ratio.detach(),
-                                      "thoughts": sum(e[3] for e in exs) / len(exs), "cut_rate": Fm.detach(),
-                                      "cut_rate_question": cut_q.detach()}
+        st = {"ce": l_ce.detach(), "ce_question": l_q.detach(), "ratio_loss": l_ratio.detach(),
+              "thoughts": sum(e[3] for e in exs) / len(exs), "cut_rate": Fm.detach(), "cut_rate_question": cut_q.detach()}
+        total = l_byte + a * l_ratio
+        if targets is not None:
+            pr = torch.cat([th[b][:, : self.D0].float() for b in range(B) if exs[b][3] > 0] or [logits.new_zeros(0, self.D0)])
+            tg = torch.cat([targets[b] for b in range(B) if exs[b][3] > 0] or [logits.new_zeros(0, self.D0)])
+            if pr.shape[0]:
+                l_g = F.smooth_l1_loss(pr, tg)
+                total = total + self.ground * l_g
+                var = (tg - tg.mean(0)).pow(2).sum(-1).mean().clamp(min=1e-8)
+                st["ground_loss"] = l_g.detach()
+                st["ground_explained"] = (1 - (pr - tg).pow(2).sum(-1).mean() / var).detach()
+        return total, st
 
     # ------------------------------------------------------------------ evaluation
     @torch.no_grad()
@@ -224,6 +270,9 @@ class Coconut:
         model writes only the answer; stage s: s steps are thoughts and the model writes the rest of the reasoning.
         n_thoughts: per problem override (default c x replaced steps, the count read off the question).
         Returns per problem (generated text, number of thoughts)."""
+        if self.ground > 0 and n_thoughts is None:  # as many thoughts as the true reasoning has chunks (oracle count)
+            st_all = [n_written_steps(p["q"]) if stage is None else stage for p in probs]
+            n_thoughts = [t.shape[0] for t in self.reasoning_chunks(probs, st_all)]
         ctx, stops, ns = [], [], []
         for i, p in enumerate(probs):
             k = n_written_steps(p["q"]) if stage is None else min(stage, n_written_steps(p["q"]))

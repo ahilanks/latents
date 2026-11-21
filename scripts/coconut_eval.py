@@ -38,7 +38,7 @@ def main():
     cfg, model, _ = load_any(Path(run).relative_to(ROOT) if run.startswith(str(ROOT)) else run, dev)
     cc = cfg.get("coconut", {})
     co = Coconut(model, cfg["model"], c=cc.get("c", 1), feed=cc.get("feed", "full"), read=cc.get("read", "stop"),
-                 fresh=cc.get("fresh", 0))
+                 fresh=cc.get("fresh", 0), ground=cc.get("ground", 0.0))
     probs = [json.loads(l) for l in open(ROOT / a.data_dir / "test.jsonl")][: a.n]
     ac = dict(device_type="cuda" if dev == "cuda" else "cpu", dtype=torch.bfloat16, enabled=dev == "cuda")
     res = {"run": a.run, "coconut": cc, "n": len(probs)}

@@ -1,0 +1,7 @@
+# Hidden-state feedback on the normal H-Net, 0.6B bytes of web text (= rdiag/h_base + feedback): the main network's
+# last-layer output at one chunk is added to its input at the next chunk (two passes of the main network; the feedback
+# starts at zero, so the model starts as the plain H-Net). latents/models.py main_pass.
+base: rdiag/h_base.yaml
+group: feedback
+model:
+  feedback: {passes: 2}

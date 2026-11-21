@@ -16,3 +16,7 @@ sh mkdir -p logs/nextlat && for r in C-B1-plain-cot NLc-f3 NLc-p06nl NLc-p06nln 
 python -m latents.train configs/nextlat/arith_nl_kl.yaml name=NLc-p06kl train.init_from=runs/NL-klonly-s0/final.pt train.micro_batch=16
 barrier
 sh python scripts/coconut_eval.py runs/NLc-p06kl --n 2000 --modes written > logs/nextlat/written_NLc-p06kl.txt 2>&1
+# Added 2026-11-20 (user: the reasoning accuracy of every NextLat variant): the paper's full objective (both terms).
+python -m latents.train configs/nextlat/arith_nl.yaml name=NLc-p06nlkl model.nextlat.kl=1.0 train.init_from=runs/NL-h1kl-s0/final.pt train.micro_batch=16
+barrier
+sh python scripts/coconut_eval.py runs/NLc-p06nlkl --n 2000 --modes written > logs/nextlat/written_NLc-p06nlkl.txt 2>&1

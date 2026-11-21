@@ -58,7 +58,7 @@ def main():
     cfg, model, _ = load_any(a.run, dev)
     cc = cfg.get("coconut", {})
     co = Coconut(model, cfg["model"], c=cc.get("c", 1), feed=cc.get("feed", "full"), read=cc.get("read", "stop"),
-                 fresh=cc.get("fresh", 0))
+                 fresh=cc.get("fresh", 0), ground=cc.get("ground", 0.0))
     rng = random.Random(77)
     probs = []
     while len(probs) < a.n_train + a.n_test:

@@ -35,7 +35,7 @@ def main():
     cfg, model, _ = load_any(a.run, "cuda")
     cc = cfg.get("coconut", {})
     co = Coconut(model, cfg["model"], c=cc.get("c", 1), feed=cc.get("feed", "full"), read=cc.get("read", "stop"),
-                 fresh=cc.get("fresh", 0))
+                 fresh=cc.get("fresh", 0), ground=cc.get("ground", 0.0))
     ac = dict(device_type="cuda", dtype=torch.bfloat16)
     rng = random.Random(5)
     probs = []

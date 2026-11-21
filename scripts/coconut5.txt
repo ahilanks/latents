@@ -1,0 +1,14 @@
+# Grounded thoughts (user, 2026-11-20: "ground it with the next chunks: chunk the reasoning steps too and the final
+# hidden state is the next latent"). --ground 1: the model chunks the full written example itself; the chunks that begin
+# inside the deleted steps give the number of thoughts and, one by one, their targets (the encoder's chunk vectors).
+# Loss = next-byte loss on what is written after the thoughts (through them) + the question + cut count per part
+# + SmoothL1(thought, target). Thought = the part of the main network's output the decoder reads (--feed input),
+# read-out from the last thought (--read thought). At test time the thought count is still the true reasoning's chunk
+# count (oracle); to be replaced once the recipe works.
+#   coco-ground       curriculum (one more step hidden per stage, a stage ends at 90% or 4000 steps); byte-level modules
+#                     as designed. Question: does grounding remove the stall at two hidden calculations?
+#   coco-ground-all   every step hidden from the start, byte-level modules restarted at <start> (only the main network
+#                     and its thoughts connect question and answer).
+# Started by hand, one per GPU:
+#   python scripts/coconut_train.py --init runs/C-B1-plain-cot --name=coco-ground --ground 1 --read thought --feed input --ratio parts --stages 7 --stage_steps 4000 --eval_every 250 --advance_at 0.9
+#   python scripts/coconut_train.py --init runs/C-B1-plain-cot --name=coco-ground-all --ground 1 --read thought --feed input --fresh 1 --ratio parts --first_stage 7 --stages 7 --stage_steps 6000 --eval_every 500 --advance_at 0.9

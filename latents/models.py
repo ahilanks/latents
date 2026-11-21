@@ -10,6 +10,8 @@ Project modules that live on the model (so they are saved with it and seen by th
   m.surprise  prediction-error router (model.router=surprise, ladder R9)
   m.nest      towers for levels >= 2 (latents/nested.py, ladder phases 4-5)
   m.nextlat   latent transition model for the next-latent loss (model.nextlat, latents/nextlat.py)
+  m.feedback  hidden-state feedback (model.feedback): the main network's last-layer output at one chunk is added to
+              its input at the next chunk (see main_pass)
 """
 from dataclasses import dataclass, field
 
@@ -67,7 +69,98 @@ def attach_extras(m, mc: dict, device="cuda"):
     if mc.get("nextlat"):
         from latents.nextlat import NextLat
         m.nextlat = NextLat(mc["d_model"][-1], D0, **mc["nextlat"]).to(device)
+    if mc.get("feedback"):
+        attach_feedback(m, mc, device)
     return m
+
+
+def attach_feedback(m, mc, device="cuda"):
+    """Add the feedback module described by mc["feedback"] to a model (also to a loaded plain model: it starts at zero)."""
+    m.feedback = Feedback(mc["d_model"][-1], **{k: v for k, v in mc["feedback"].items() if k not in ("passes", "mode")}).to(device)
+    m._feedback_cfg = dict(mc["feedback"])
+    return m
+
+
+class Feedback(nn.Module):
+    """Maps the main network's last-layer output at chunk t to an addition to its input at chunk t+1. The output
+    layer starts at zero, so a model with feedback starts exactly as the same model without it."""
+
+    def __init__(self, D1, hidden=0):
+        super().__init__()
+        self.norm = nn.LayerNorm(D1)
+        if hidden:
+            self.net = nn.Sequential(nn.Linear(D1, int(hidden)), nn.GELU(), nn.Linear(int(hidden), D1))
+            last = self.net[-1]
+        else:
+            self.net = nn.Linear(D1, D1)
+            last = self.net
+        nn.init.zeros_(last.weight)
+        nn.init.zeros_(last.bias)
+
+    def forward(self, z):
+        return self.net(self.norm(z.float()))
+
+
+LOOP_MAX = 160  # longest row (in chunks) the exact loop accepts: its cost grows with the square of the length
+
+
+def main_pass(m, hp, cu1, max1, valid=None):
+    """The main network on packed chunk inputs hp (T1, D1). Hidden-state feedback (model.feedback):
+      {mode: loop}   the last-layer output at chunk t is added (through m.feedback) to the bottom-layer input at chunk
+                     t+1 of the same row: a real loop in one network, computed chunk by chunk (exact). The cost grows
+                     with the square of the row length, so it is for short rows (one problem per row).
+                     valid: per row, how many leading chunks matter (the rest, padding, get zeros).
+      {passes: k}    an approximation with k parallel passes: pass i+1 gets pass i's outputs, shifted by one chunk.
+                     Exact for a row's first k chunks; with k = the row length it equals the loop.
+    Every variant sees only earlier chunks (causal), lets the gradient through the whole chain, and computes the same
+    thing at inference."""
+    inner = m.backbone.main_network.main_network
+    fb = getattr(m, "feedback", None)
+    if fb is None:
+        return inner(hp, cu_seqlens=cu1, max_seqlen=max1)
+    cfg = getattr(m, "_feedback_cfg", None) or {}
+    if cfg.get("mode", "passes") == "loop":
+        return loop_pass(m, hp, cu1, valid)
+    z = inner(hp, cu_seqlens=cu1, max_seqlen=max1)
+    first = torch.zeros(hp.shape[0], dtype=torch.bool, device=hp.device)
+    first[cu1[:-1].long()] = True
+    for _ in range(int(cfg.get("passes", 2)) - 1):
+        prev = torch.roll(z, 1, 0)
+        add = fb(prev).to(hp.dtype)
+        add = torch.where(first[:, None], torch.zeros_like(add), add)
+        z = inner(hp + add, cu_seqlens=cu1, max_seqlen=max1)
+    return z
+
+
+def loop_pass(m, hp, cu1, valid=None):
+    """Exact hidden-state loop: x_1 = c_1, x_{t+1} = c_{t+1} + feedback(z_t), z_t = main network's last-layer output
+    at chunk t given x_1..x_t. Step t runs the main network on every row's first t inputs and keeps the last output
+    (earlier outputs cannot change: the network is causal)."""
+    inner = m.backbone.main_network.main_network
+    fb = m.feedback
+    cu = cu1.long().tolist()
+    rows = [hp[cu[b]:cu[b + 1]] for b in range(len(cu) - 1)]
+    n = [r.shape[0] if valid is None else min(int(valid[b]), r.shape[0]) for b, r in enumerate(rows)]
+    T = max(n, default=0)
+    assert T <= LOOP_MAX, f"the exact loop is for short rows (<= {LOOP_MAX} chunks), got {T}; use feedback passes"
+    xs, zs = [[] for _ in rows], [[] for _ in rows]
+    for t in range(T):
+        act = [b for b in range(len(rows)) if n[b] > t]
+        for b in act:
+            x = rows[b][t:t + 1]
+            xs[b].append(x if t == 0 else x + fb(zs[b][-1]).to(x.dtype))
+        cu_t = torch.arange(len(act) + 1, device=hp.device, dtype=torch.int32) * (t + 1)
+        z = inner(torch.cat([torch.cat(xs[b], 0) for b in act], 0), cu_seqlens=cu_t, max_seqlen=t + 1)
+        last = z[cu_t[1:].long() - 1]
+        for i, b in enumerate(act):
+            zs[b].append(last[i:i + 1])
+    out = []
+    for b, r in enumerate(rows):
+        zb = torch.cat(zs[b], 0) if zs[b] else r.new_zeros(0, r.shape[-1])
+        if zb.shape[0] < r.shape[0]:  # padding chunks: never read by a loss
+            zb = torch.cat((zb, zb.new_zeros(r.shape[0] - zb.shape[0], zb.shape[-1])), 0)
+        out.append(zb.to(hp.dtype))
+    return torch.cat(out, 0)
 
 
 def lr_multipliers(mc: dict, n_gpt: float = 4.6) -> list:
@@ -198,7 +291,7 @@ def forward_lm(m: HNetForCausalLM, input_ids: torch.Tensor, pool_k: int = 0, det
     hp = hc if inner.pad_dimension is None else torch.cat((hc, inner.pad_dimension.expand(hc.shape[0], -1)), dim=-1)
     if o.get("topdown") is not None:
         hp = hp + o["topdown"](hc, cu1, max1).to(hp.dtype)
-    z_full = inner.main_network(hp, cu_seqlens=cu1, max_seqlen=max1)
+    z_full = main_pass(m, hp, cu1, max1)
     z = z_full[..., : hc.shape[-1]]
     zsrc = z if main_out_fn is None else main_out_fn(z_full).to(z.dtype)
     if zero_main or o.get("floor"):
@@ -263,10 +356,10 @@ def _lr_mult(p, default):
 
 def param_groups(m: HNetForCausalLM, mc: dict, wd: float):
     """AdamW groups: per-stage LR multiplier (official apply_lr_multiplier) x {decay, no-decay}.
-    Project modules: dec_emb / surprise get the stage-0 multiplier, nested towers and nextlat the stage-1 one."""
+    Project modules: dec_emb / surprise get the stage-0 multiplier, nested towers, nextlat and feedback the stage-1 one."""
     mults = lr_multipliers(mc)
     m.apply_lr_multiplier(mults)
-    for name, mod in (("dec_emb", 0), ("surprise", 0), ("nest", -1), ("nextlat", -1)):
+    for name, mod in (("dec_emb", 0), ("surprise", 0), ("nest", -1), ("nextlat", -1), ("feedback", -1)):
         if getattr(m, name, None) is not None:
             for p in getattr(m, name).parameters():
                 p._optim = {"lr_multiplier": mults[mod]}

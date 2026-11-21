@@ -1,0 +1,10 @@
+# Is NextLat's full objective really above the plain H-Net on reasoning? (2026-11-20: 93.2% vs 84.2% at 0.6B, one seed
+# each; most of the gap is on the 7-8-step problems, which vary a lot from run to run.) Two more fine-tune seeds of
+# each (same pretrained models), then written-reasoning accuracy on the 2000 test problems.
+# Run:  python scripts/run_jobs.py scripts/nextlat_seeds.txt --gpus 0,1
+python -m latents.train configs/task/arith_plain.yaml name=Cc-p06-s1 train.seed=1 train.init_from=runs/side-p06-plain-s0/final.pt train.micro_batch=16
+python -m latents.train configs/nextlat/arith_nl.yaml name=NLc-p06nlkl-s1 train.seed=1 model.nextlat.kl=1.0 train.init_from=runs/NL-h1kl-s0/final.pt train.micro_batch=16
+python -m latents.train configs/task/arith_plain.yaml name=Cc-p06-s2 train.seed=2 train.init_from=runs/side-p06-plain-s0/final.pt train.micro_batch=16
+python -m latents.train configs/nextlat/arith_nl.yaml name=NLc-p06nlkl-s2 train.seed=2 model.nextlat.kl=1.0 train.init_from=runs/NL-h1kl-s0/final.pt train.micro_batch=16
+barrier
+sh for r in Cc-p06-s1 NLc-p06nlkl-s1 Cc-p06-s2 NLc-p06nlkl-s2; do python scripts/coconut_eval.py runs/$r --n 2000 --modes written > logs/nextlat/written_$r.txt 2>&1; done

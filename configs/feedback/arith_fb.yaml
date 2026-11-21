@@ -1,0 +1,5 @@
+# Written-reasoning fine-tune (= task/arith_plain) with hidden-state feedback in the main network.
+base: task/arith_plain.yaml
+group: feedback
+model:
+  feedback: {passes: 2}
