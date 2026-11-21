@@ -1,0 +1,8 @@
+# Coconut on the written-reasoning H-Net (fast iteration: one run, one seed, one thought per written step).
+# Run:  python scripts/run_jobs.py scripts/coconut.txt      (~45 min on one H100, estimate)
+# Needs: runs/C-B1-plain-cot/final.pt from HF (normal 3B H-Net fine-tuned on written reasoning, 94.6%).
+# Progress: runs/coco-c1/metrics.jsonl (loss per step; an eval line at the end of every stage).
+sh mkdir -p logs/coconut
+sh test -f data/task_arith/test.jsonl || python -m latents.tasks --out data/task_arith
+python scripts/coconut_train.py --init runs/C-B1-plain-cot --name=coco-c1 --c 1 --feed full --stages 7 --stage_steps 500 --batch 128 --lr 1e-4
+sh python scripts/coconut_eval.py runs/coco-c1 --n 2000 > logs/coconut/coco-c1.txt 2>&1

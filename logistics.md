@@ -861,3 +861,19 @@ gates and job files. ⚠️ R0 re-runs the hcD3 recipe first to confirm the refa
     - **Shrunk but meaningful (the user's view):** the linear map or the rescaled prediction explains much more than the head, or next-word top-10 is far above the most-frequent baseline.
     - **The joint model is the control:** its trunk is trained by bytes. If its targets are more predictable or more word-like, the byte loss is what organises the space.
 - **(2026-11-21) Change in how we work (user): fast iteration first.** Explore which directions work and are promising before testing thoroughly: one seed, the cheapest setting that answers the question, short runs, move on quickly when something clearly fails. Seeds, replicates and controls come only once a direction looks promising. Exploratory numbers are reported as single-seed. Current direction: Coconut on a pretrained normal H-Net (written-reasoning checkpoint `C-B1-plain-cot`), one thought per written step first. Recorded in `CLAUDE.md` and `NEXT_STEPS.md`.
+- **(2026-11-21, cloud session) Coconut on a byte H-Net, code only — not run yet** (`latents/coconut.py`, `scripts/coconut_train.py`, `scripts/coconut_eval.py`, job file `scripts/coconut.txt`, CPU tests `tests/cpu/test_coconut.py`).
+  - **Start:** the written-reasoning H-Net `C-B1-plain-cot` (Coconut's stage 0, 94.6%).
+  - **Thoughts:** a thought is the main network's output at the previous position, fed back as its next input. The full-width output by default; `--feed input` uses the decoder-facing half padded like a normal chunk. The byte encoder and decoder are idle during thoughts.
+  - **Stage s** deletes the first s written steps and puts c·s thoughts between two marker bytes (1 = start, 2 = stop). Chunk boundaries are forced at both markers. Training is the next-byte loss on everything after the stop marker, backpropagated through the thought chain, plus H-Net's ratio loss; everything trains.
+  - **Schedule:** stages 1–7 × 500 steps, batch 128, lr 1e-4 (× H-Net's per-stage multipliers), optimizer reset at each stage, clip 1.0. A quick eval (200 problems) at each stage end, with that stage's thoughts and with all thoughts.
+  - **Eval (2000 problems):**
+    - all thoughts: c per written step, the count read off the question
+    - no thoughts: control
+    - written reasoning: did it survive?
+  - **CPU tests:**
+    - at stage 0 the forward equals the normal H-Net forward
+    - the replaced steps appear nowhere
+    - the loss reaches encoder, router, main network and decoder, and changes when the thoughts change
+    - question bytes are unaffected by the thoughts
+    - generation runs, and the train/eval scripts run end to end
+  - **Fast-iteration plan:** if it clearly fails, try 2 thoughts per step, then the input-shaped feed.
