@@ -1,0 +1,8 @@
+# Coconut on the written-reasoning H-Net, second try (2026-11-20): the next-byte loss also covers the question
+# (--q_loss 1, now the default), because without it the question's cuts were removed and its numbers could not be read.
+# Question: can ONE hidden step be learned from the byte loss? Stage 1 (500 steps; only the restated first value is
+# replaced) then stage 2 (4000 steps; the first real calculation is hidden), a quick eval every 500 steps.
+# Both runs share one GPU (small model):  CUDA_VISIBLE_DEVICES=0 python scripts/run_jobs.py scripts/coconut2.txt --gpus 0
+# with RUN_JOBS_MAX_PER_GPU unset runs them one after the other; on 2026-11-20 they were started side by side by hand.
+python scripts/coconut_train.py --init runs/C-B1-plain-cot --name=coco-c1q --c 1 --stages 2 --stage_steps 500 --last_stage_extra 3500 --eval_every 500
+python scripts/coconut_train.py --init runs/C-B1-plain-cot --name=coco-c2q --c 2 --stages 2 --stage_steps 500 --last_stage_extra 3500 --eval_every 500

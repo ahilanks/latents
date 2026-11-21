@@ -1,0 +1,5 @@
+# As h_nl.yaml with the next-latent loss measured in units of the states' own spread (norm: batch), so that making
+# the states nearly constant no longer satisfies it (what happened in NL-h1-s0).
+base: nextlat/h_nl.yaml
+model:
+  nextlat: {weight: 1.0, kl: 0.0, horizon: 1, hidden: 1024, layers: 3, norm: batch}

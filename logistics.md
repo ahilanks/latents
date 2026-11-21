@@ -877,3 +877,120 @@ gates and job files. ⚠️ R0 re-runs the hcD3 recipe first to confirm the refa
     - question bytes are unaffected by the thoughts
     - generation runs, and the train/eval scripts run end to end
   - **Fast-iteration plan:** if it clearly fails, try 2 thoughts per step, then the input-shaped feed.
+- **18:30 PT (2026-11-20) Coconut, first run (`coco-c1`, `scripts/coconut.txt`): fails from stage 2 on, because the question loses its cuts.** New pod (runs re-downloaded from HF: `C-B1-plain-cot`, `side-f3-plain-s1`, `side-p06-plain-s0`; the environment is `.venv`). Single seed, quick evals on 200 problems.
+
+  | stage (500 steps each) | this stage's thoughts, rest written | loss after the thoughts (nats/byte) |
+  |---|---|---|
+  | 1 (only the restated first value is replaced: no hidden calculation) | 82.5% | 0.00–0.02 |
+  | 2 (first hidden calculation) | 2.5% | 0.27 |
+  | 3 / 4 / 5 / 6 | 1.5 / 1.0 / 0.5 / 0.5% | 0.25 / 0.27 / … |
+
+  - **Not "the hidden step is too hard": the model stops reading the question.** Loss by kind of byte, stage-2 checkpoint on stage-2 examples (256 training-like problems): hidden value 2.31 nats per digit (chance), **operands copied from the question 1.14 per digit** (0.000 in `C-B1-plain-cot`; 0.10 already after stage 1), results computed from visible operands 0.001. Written reasoning without markers: 94.1% (start) → 71.1% (after stage 1) → 2.0% (after stage 2), e.g. `p=24-6=18. u=18-96=22.` for `p=o-4; u=p-56`.
+  - **Cause: the cuts leave the question.** Cut rate on the question 0.135 (start) → 0.132 (stage 1) → 0.067 (stage 2) → 0.080 (stage 4), on reasoning + answer 0.256 → 0.345; question cuts same as at the start F1 1.00 → 0.99 → 0.63 → 0.53. Start: `Q: y=48; o=y+|13; p=o-|4; u=p-|56; u=?|`; stage 4: `Q: y=48; o=y+13; p=o-4; u=p-56; u=?|` (one chunk). Coconut puts no loss on the question, so only the ratio loss acts on its cuts and the count moves to the reasoning, where the byte loss pays for it.
+  - **Fix (simple, end to end): keep the normal next-byte loss on the question** (`Coconut.loss(q_loss=True)`, `--q_loss 1`, now the default; the markers are still not targets). Also new in `scripts/coconut_train.py`: `--first_stage`, `--eval_every`, W&B logging, and a "carried value" score (`latents.coconut.carried`: is the first number the model needs from its thoughts right — exact / units / tens digit).
+  - Job-file bug fixed: `scripts/coconut.txt` lacked a `barrier` before the final eval (it ran at launch and failed).
+  - W&B: the key in `.env` was rejected by the server (`invalid api key`; SDK 0.31.2 talks to `api.forge.coreweave.com`, the same backend as `api.wandb.ai`); the user supplied a new key at ~18:25 PT. Runs started before that (`NL-h1-s0`, `NL-h1kl-s0`, `coco-c1`) were uploaded afterwards with `scripts/wandb_backfill.py`.
+- **18:40 PT (2026-11-20) Next-latent prediction (NextLat, arXiv:2511.05963) on the normal H-Net (user: test it; an agreed exception to latent-only training — the next-byte loss trains the whole model as usual).** Code: `latents/nextlat.py` (`model.nextlat`), configs `configs/nextlat/`, job files `scripts/nextlat.txt`, `nextlat2.txt`, `nextlat_cot.txt`, tests `tests/cpu/test_nextlat.py`.
+  - **What it is here:** a 3-layer MLP predicts the main network's next output (full width, one per chunk) from its current output and the next chunk's input; SmoothL1 to the stop-gradient target, weight 1; residual update, layer-normed input (as in the paper). Optional paper KL term: the frozen decoder reads the predicted states and its byte distribution is pulled to the normal one. Used only in training.
+  - **Result (0.6B bytes web, seed 0, single runs):**
+
+    | run | web bpb | states' variation / mean square | copying the current state explains | MLP explains | states' effective rank |
+    |---|---|---|---|---|---|
+    | normal H-Net `side-p06-plain-s0` | 1.362 | 10.8% | −0.14 | – | 16.1 |
+    | + next-latent loss `NL-h1-s0` | 1.373 | 0.44% | 0.974 | 0.983 | 1.5 |
+    | + next-latent + KL `NL-h1kl-s0` | 1.394 | (same picture) | 0.969 | 0.978 | 1.1 |
+
+  - **The loss is met by flattening the states, not by predicting them.** The main network's outputs become almost constant from chunk to chunk (81% of the little variation left is one direction; copying the state 16 chunks back still explains 0.54), so "next = current" is nearly exact and the loss falls to ~4e-5. The deep decoder reads the small differences at no cost in bpb. In the paper's transformers the output head is one linear layer, which cannot do that for free.
+  - **Scale-free versions of the latent-space loss do not fix it** (`scripts/nextlat2.txt`): per-dimension standardised (`norm: batch`, `NL-h1n-s0`) gradient norm ~900, val bpb 2.29 at step 1000 (others 1.62), stopped at 1500; one overall spread (`norm: scale`, `NL-h1ns-s0`) the outputs go constant (variation 3e-7 of the mean square, below the formula's floor), val bpb 1.96 at step 500 (others 1.78), stopped; the same at weight 0.03 (`NL-h1ns003-s0`) variation 1e-6, bpb 1.388.
+  - **Only the paper's KL term (byte space), no latent-space loss (`NL-klonly-s0`): harmless.** bpb 1.364 (normal 1.362), variation 6.4% of the mean square, the MLP explains 52% of the next state (copy 8%), KL 0.0003 nats/byte.
+- **19:25 PT (2026-11-20) What the next-latent loss asks of an H-Net: almost nothing, and the latent-space version switches the main network off** (`scripts/nextlat_probe.py` → `logs/nextlat/probe.json`: frozen model, 16 web val windows; KL = nats per byte between the normal byte distribution and the one the decoder gives when the main network's states are replaced; probe = a fresh transition MLP fitted for 400 steps on the frozen model, not end to end).
+
+  | | normal `side-p06-plain-s0` | KL only `NL-klonly-s0` | latent-space loss `NL-h1-s0` |
+  |---|---|---|---|
+  | states replaced by another random chunk's (no information) | 0.0147 | 0.0090 | 0.0011 |
+  | … by their mean vector | 0.0105 | 0.0061 | 0.0008 |
+  | … by the previous chunk's state | 0.0037 | 0.0019 | 0.00005 |
+  | … by the run's own transition MLP | – | 0.00024 | 0.00004 |
+  | … by a probe MLP (fitted with KL / with regression) | 0.0006 / 0.0006 | 0.0003 / 0.0004 | 0.00004 |
+  | next state's variation explained: copy / regression probe | −0.11 / **0.85** | 0.03 / 0.86 | 0.97 / 0.98 |
+
+  - **In the normal H-Net the next state is already 85% predictable** from the current state and the next chunk's input, and a probe recovers 96% of what the decoder gets from it. The next chunk's input is the encoder's state, which has read the whole past, so unlike a token it already carries the history; the constraint that makes NextLat useful in a token transformer hardly binds here.
+  - **At 0.6B bytes the decoder takes little from the main network on web text**: swapping in another chunk's state costs 0.015 nats/byte (zeros cost 1.67, but that is an input the decoder never saw). The latent-space loss removes even that (0.0011): flattening the states = the main network disconnected from the bytes, at +0.011 bpb.
+  - **The reasoning task shows the cost** (written reasoning, 2000 test problems, `logs/nextlat/written_*.txt`; fine-tunes of `scripts/nextlat_cot.txt`, single seed):
+
+    | model | overall | by steps 2–8 |
+    |---|---|---|
+    | 3B normal `C-B1-plain-cot` | 94.7 | 100 100 100 100 100 93 71 |
+    | 3B normal, latent-space next-latent loss in the fine-tune `NLc-f3` | 86.7 | 100 100 100 100 100 92 16 |
+    | 0.6B normal `Cc-p06` | 84.3 | 100 100 100 100 100 70 20 |
+    | 0.6B pretrained and fine-tuned with the latent-space loss `NLc-p06nl` | 59.2 | 90 74 64 84 91 8 2 |
+    | 0.6B pretrained and fine-tuned with the KL term only `NLc-p06kl` | 76.3 | 99 99 99 99 98 34 7 |
+
+    In the 3B fine-tune the states did not flatten (variation 6.9%, MLP explains 0.986, copy 0.41) and lengths 2–7 are unchanged, but 8-step problems fall from 71 to 16.
+- **19:45 PT (2026-11-20) Coconut with the question loss: one hidden calculation is learned, the second stalls at the tens digit** (`scripts/coconut2.txt`, `coconut3.txt`; single seed, quick evals on 200 problems; "hidden value" = the first number the model needs from its thoughts).
+
+  | run | stage | steps in the stage | hidden value exact / ones / tens | answer |
+  |---|---|---|---|---|
+  | `coco-c1q` (1 thought per step) | 1 (no calculation hidden) | 500 | 100 / 100 / 100 | 93.0 |
+  | | 2 (one calculation hidden) | 500 / 1000 / 1500 / 2000 / 2500 / 4000 | 7.5 / 14.5 / 34 / 54 / 86 / **96** | 81.0 at the end |
+  | `coco-c2q` (2 thoughts per step), stopped at 2500 | 2 | 500 / 1000 / 1500 / 2000 | 6.5 / 16.5 / 30.5 / 43.5 | – |
+  | `coco-c1q-rest` → `coco-c1q-long` (stage 3 = two calculations hidden) | 3 | 1000 / 2000 / 3000 / 5000 / 7000 | 8.5 / 14.5 / 12.5 / 19.5 / 19.5 (ones 47 / 88 / 96 / 100 / 100; tens 15–22) | ~22 |
+  | `coco-c1q-long-lr3` (lr 3e-4 from the stage-3 checkpoint) | 3 | +1750 | 15.5 (ones 98, tens 16) | |
+
+  - **The question's cuts hold with the question loss** (cut rate on the question 0.135 → 0.12–0.13) and written reasoning is not lost at stage 1 (93%).
+  - **The thoughts are used:** `coco-c1q`, stage 2, 400 problems: hidden value right 96.8% with its 2 thoughts, 2.2% with none, 41.7% with one, 78.7% with three.
+  - **Two thoughts per step are not better; a 3× learning rate and mixing earlier stages (0.3) do not speed up stage 3** (ones digit at 250/500/750 steps 20/31/40% base, 16/28/31% lr 3e-4, 18/30/38% mixing).
+  - **Why the second calculation stalls** (`scripts/coconut_probe.py`, linear probes on each thought, 1500 held-out problems, chance 10%): in the stage-2 model the thoughts hold the first value's ones digit (100%) but the hidden result only at 33–44% (ones) / 17–26% (tens): the calculation is finished at the `<stop>` chunk's own main-network position, whose output is never fed back. At stage 3 the thoughts hold the first hidden result's ones digit (95–97%) but not its tens digit (15–16%), so the second calculation has nothing to carry from.
+  - **Next (running, `scripts/coconut4.txt`, `coco-rt`): read the first bytes after thinking from the output at the last thought** (`--read thought`): no separate `<stop>` position, so the state that writes the next step at one stage is the new thought of the next.
+- **19:55 PT (2026-11-20) Latent geometry check run** (`scripts/latent_geometry.txt` → `logs/geometry/geometry.{json,txt}`, `r2_by_direction.png`; no training; 3B models from HF; 32 windows of each text; next word = the 300 most frequent words' centroids). The figure function now draws one panel per text with the legend outside (`--replot` redraws from the JSON).
+
+  | model | text | spread of predictions / targets | explained (head / rescaled / fresh linear map) | top-64 directions predictable (> 0.1), their share | next word top-1 / top-10 (most frequent; other position top-10) | same-word / different-word cosine |
+  |---|---|---|---|---|---|---|
+  | word cuts, latent only `R4n6-3B-s0` | web | 0.22 | 0.05 / 0.05 / 0.03 | 4, 0.02 | 0.56 / 0.78 (0.17 / 0.45; 0.08) | 0.20 / 0.00 |
+  | | chains | 0.07 | 0.00 / 0.01 / 0.03 | 2, 0.03 | | |
+  | word cuts, latent only `R4n6-3B-s1` | web | 0.22 | 0.05 / 0.05 / 0.03 | 5, 0.02 | 0.57 / 0.79 (0.16 / 0.44; 0.09) | 0.19 / 0.00 |
+  | | chains | 0.07 | 0.00 / 0.01 / 0.02 | 1, 0.01 | | |
+  | fixed 4-byte chunks, latent only `L-M1-l2-s0` | web | 0.67 | 0.47 / 0.47 / 0.43 | 64, 0.63 | 0.45 / 0.70 (0.11 / 0.34; 0.08) | 0.45 / 0.02 |
+  | | chains | 0.44 | −0.04 / 0.09 / 0.51 | 6, 0.34 | | |
+  | joint (bytes also train the trunk) `side-f3-latent-s1` | web | 0.67 | 0.38 / 0.38 / 0.21 | 64, 0.63 | 0.41 / 0.64 (0.08 / 0.31; 0.07) | 0.49 / 0.01 |
+  | | chains | 0.56 | 0.14 / 0.21 / 0.53 | 9, 0.58 | | |
+
+  - **Read against the last entry's guide.** (1) The word-cut prediction is not "the right direction but shrunk" (rescaling adds nothing, factor 1.02; a fresh linear map finds less than the head), and it explains ~5% of the targets' variation, almost all of which lies in directions the context does not predict. (2) It is still a meaningful summary of what comes next: its nearest word centroids put the true next word first 56–57% of the time (most frequent word 17%; a prediction from another position reaches 8–9% in the top ten). Both seeds agree. (3) The chains do not come out high for the word-cut models (0.00; web-only pretraining), so "small on web, high where the next step is determined" is not shown. (4) The joint model's targets are far more predictable (0.38 web, 0.14 chains; all 64 directions) and more alike for the same word (0.49 vs 0.20): the byte loss is what organises the space; so do fixed chunks (0.47), where the next 4 bytes often continue a word.
+- **20:20 PT (2026-11-20) Coconut, read-out from the last thought (`coco-rt`, `scripts/coconut4.txt`): same stall; the hidden value is not in the thoughts alone.** Single seed, 200-problem quick evals.
+  - `coco-rt` (`--read thought`): stage 1 learned in 250 steps, stage 2 in 2750 (hidden value 95.5%, answers 87%), stage 3 stuck again: ones digit 100%, tens digit 17–20% from 3000 to 6750 steps in (stopped at step 9750). `coco-rt-in` (the same with the input-shaped feed, GPU 0): stage 2 learned in 2750 steps (91.5%); stage 3 ones digit 82% at 1000 steps in (37% with the full-width feed).
+  - **Probes on the `coco-rt` stage-2 model** (`scripts/coconut_probe.py`; the third "thought" is the state the decoder reads to write the hidden value): ones digit of the hidden value 95% (linear) / 100% (MLP, 12,000 problems), **tens digit 20% / 23%**, although the model writes both digits right 96% of the time. All of the value's digits are decoded from that one state (the first cut after `<stop>` is after the value in 256 of 256 problems).
+  - **Exchange test** (512 problems): giving a problem only another problem's read-out state yields neither value: digits match the reader 1.8% exact (ones 12.5%, tens 11%), match the donor 6.6% (ones 36%, tens 13%); the step's letter stays the reader's (100%). Exchanging the whole thoughts: reader 5.5%, donor 3.3%. So the value is produced jointly by the main network's output and the byte-level encoder/decoder, which carry their own memory of the question; a fed-back thought never holds a complete result, and the second calculation has nothing complete to start from.
+  - **Next (running, GPU 1): `coco-fresh`** = `--read thought --fresh 1`: the byte-level encoder and decoder restart at `<start>`, so only the main network (its attention to the question's chunks and the thoughts) connects the question to what is written after thinking. Every gradient still flows; nothing is frozen.
+- **20:35 PT (2026-11-20) Coconut with the byte-level modules restarted at `<start>` (`--fresh 1`).** Single seed.
+  - `coco-fresh` (row-wide cut-count loss): failed within 1300 steps — the question's cut rate fell 0.135 → 0.03 and the loss after the thoughts rose 0.28 → 0.70. With the restart everything after thinking depends on the main network, cuts there are worth more, and the row-wide ratio loss takes them from the question (whose own byte loss does not care where it is cut). Fix: `--ratio parts` = the ratio loss on the question and on the part from `<start>` on separately.
+  - `coco-fresh2` (`--read thought --fresh 1 --ratio parts`): stage 1 learned in 1000 steps (hidden value 96.5%, answers 86%; question cut rate 0.19–0.23), i.e. written reasoning relearned with only the main network connecting question and reasoning. Stage 2 (first hidden calculation) starts much more slowly than with the byte-level memory (ones digit 30% at 2000 steps in, vs ~98% at 750–1000 before): consistent with the byte-level path having done part of that calculation. Running; `coco-fresh2-in` (input-shaped feed) alongside on GPU 0.
+- **20:55 PT (2026-11-20) With the byte-level restart, the first hidden calculation stalls the same way the second did before** (figure `logs/coconut/coconut_byte_memory.png`, `scripts/coconut_plot.py`).
+
+  | run | stage 2 (one calculation hidden): steps in the stage → ones / tens digit of the hidden value |
+  |---|---|
+  | `coco-c1q` (byte-level memory of the question kept) | 500: 77 / 10; 1000: 98 / 15; 2000: 100 / 55; 2500: 99 / 88; 4000: 99 / 98 |
+  | `coco-fresh2` (restart, full-width feed) | 2000: 30 / 12; 3500: 97 / 14; 5000: 100 / 15; 6000: 100 / 27; 8000: 100 / 29 (limit reached) |
+  | `coco-fresh2-in` (restart, input-shaped feed) | 3000: 87 / 10; 4000: 100 / 15; 5500: 100 / 31; 6750: 100 / 39 |
+
+  - **Reading:** the main network alone learns the ones digit of a hidden calculation and only slowly the tens digit (the carry). The one-calculation success of `coco-c1q` / `coco-rt` leaned on the byte-level encoder/decoder, which do the arithmetic when the operands are in their own stream (written reasoning: `b=17+25=42` is computed over visible digits). Asking for hidden calculations moves the arithmetic into the main network, which has to learn it from the byte loss alone.
+  - **Running:** `coco-fresh2-long` (stage 2 continued from `coco-fresh2-stage2`, 20,000-step limit, GPU 1); `coco-fresh2-in` to its 8000-step limit (GPU 0).
+  - Checkpoints on HF: `coco-c1q`, `coco-c1q-rest-stage3`, `coco-rt-stage2`, `coco-fresh2-stage1` (`scripts/hf_upload_runs.py`).
+- **21:15 PT (2026-11-20) Long continuation of the first hidden calculation with the byte-level restart; summary figures.**
+  - `coco-fresh2-long` (full-width feed), 8000 more steps (16,000 on this stage): tens digit 22–37%, not rising; the ones digit dipped to 72% around step 4500 and recovered. Stopped.
+  - `coco-fresh2-in-long` (input-shaped feed), 6000 more steps (14,000): tens digit 39 → 43 → 44.5 → 52 → **56%**, ones digit 100%. Still running (20,000-step limit per stage; it goes on to the later stages by itself once a stage reaches 90%).
+  - Started on GPU 1: `coco-fresh2-in-lr3` = the same stage from `coco-fresh2-in-stage2` at lr 3e-4 (does a higher learning rate speed up the carry here?).
+  - **Figures (user, 2026-11-20: every result with a clear graph; rule added to `CLAUDE.md`):** `scripts/summary_figs.py` (style `scripts/figstyle.py`) → `logs/figs/coconut_digits.png`, `coconut_exchange.png`, `nextlat.png`, `geometry.png`, `coconut_carry.png`; learning curves `scripts/coconut_plot.py`. The exchange-test numbers are kept in `logs/coconut/exchange_coco-rt-stage2.json`.
+- **21:30 PT (2026-11-20) ✅ First hidden calculation learned with the byte-level restart (`coco-fresh2-in` → `coco-fresh2-in-long`: `--read thought --feed input --fresh 1 --ratio parts`).** Single seed, 200-problem quick evals; figure `logs/figs/coconut_carry.png`.
+  - Stage 2: tens digit 39% (8000 steps) → 43 → 44.5 → 52 → 56 → 62.5 → 71 → 75.5 → 81.5 → **91%** at 16,500 steps on the stage; ones digit 100%; hidden value exact 91%. Checkpoint `coco-fresh2-in-long-stage2` (HF). The full-width feed did not get there (22–37% at 16,000 steps); lr 3e-4 from the same checkpoint was slower (tens digit 34.5% after 2000 steps vs 43%; stopped).
+  - Stage 3 (two hidden calculations) started by itself: ones digit 24.5 → 88 → 99.5 → 100% at 500 / 1000 / 1500 / 2000 steps (stage 2 needed ~4000 for that); tens digit 16–17% so far.
+  - **Correction to the exchange test's reading** (`scripts/coconut_exchange.py`, `logs/coconut/exchange_coco-fresh2-in-long-stage2.json`): on this model the donor's read-out state gives the donor's ones digit 78% of the time but its tens digit 13% (reader's tens 31%). Checked with the real kernels: with the restart the encoder states after `<start>` are identical for different questions (max diff 0.0000) and the decoder is isolated (0.016, rounding). The decoder's sequence begins at the `<start>` byte, so it also reads the main network's output at the `<start>` chunk (= the first thought) and carries it forward; position by position, the only decoder input that differs between a donor's own run and the same bytes after another question is that state. Probe (MLP): the first thought holds the first value 100% / 100% and the hidden result's tens digit 72%; the read-out state holds the hidden result's ones digit 100% and its tens digit 36%. So the value is assembled from two main-network outputs (first thought and read-out), not from the read-out alone; in the runs without the restart the decoder additionally read the main network's outputs over the whole question.
+  - Started (GPU 1): `coco-fresh2-in-seed1`, a second seed of the whole recipe from the written-reasoning model.
+- **21:55 PT (2026-11-20) Are the thoughts used? (user)** `logs/coconut/thought_count.json`, figure `logs/figs/coconut_thoughts.png`; stage 2 (one hidden calculation, trained with 2 thoughts), 400 test problems, hidden value exactly right:
+
+  | thoughts given | 0 | 1 | 2 (as trained) | 3 |
+  |---|---|---|---|---|
+  | byte-level restart, input-shaped feed (`coco-fresh2-in-long-stage2`) | 8.5 | 44.8 | **91.0** | 82.8 |
+  | original design (`coco-c1q`) | 2.2 | 41.7 | **96.8** | 78.7 |
+
+  - The trained model depends on its thoughts. Not yet answered: would the same curriculum without any thoughts learn the hidden calculation as well? Control started on GPU 1: `coco-fresh2-nothoughts` (`--c 0`: the steps are deleted, nothing is fed back; the model has only the `<start>` and `<stop>` positions).
+  - Stage 3 of `coco-fresh2-in-long` (two hidden calculations): ones digit 100% from 1500 steps in, tens digit 14–22% up to 9500 steps in (not learned so far). Second seed `coco-fresh2-in-seed1`, stage 2 at 6500 steps in: ones digit 100%, tens digit 26.5–31% (the first seed had 39% there).

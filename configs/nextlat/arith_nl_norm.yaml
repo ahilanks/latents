@@ -1,0 +1,5 @@
+# Written-reasoning fine-tune with the scale-free next-latent loss (norm: batch).
+base: task/arith_plain.yaml
+group: nextlat
+model:
+  nextlat: {weight: 1.0, kl: 0.0, horizon: 1, hidden: 1024, layers: 3, norm: batch}

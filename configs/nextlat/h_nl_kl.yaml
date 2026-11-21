@@ -1,0 +1,5 @@
+# As h_nl.yaml plus the paper's KL term (weight 1): the frozen decoder reads the predicted states and its byte
+# distribution is pulled to the normal one (one extra decoder pass).
+base: nextlat/h_nl.yaml
+model:
+  nextlat: {weight: 1.0, kl: 1.0, horizon: 1, hidden: 1024, layers: 3}

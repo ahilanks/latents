@@ -1,0 +1,7 @@
+# Next-latent prediction (NextLat, arXiv:2511.05963) on the normal H-Net, 0.6B bytes of web text (= rdiag/h_base +
+# the next-latent loss): a 3-layer MLP predicts the main network's next output from its current output and the next
+# chunk's input; SmoothL1 to the stop-gradient target, weight 1. No KL term, one-step horizon (the cheapest form).
+base: rdiag/h_base.yaml
+group: nextlat
+model:
+  nextlat: {weight: 1.0, kl: 0.0, horizon: 1, hidden: 1024, layers: 3}

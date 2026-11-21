@@ -9,6 +9,7 @@ Project modules that live on the model (so they are saved with it and seen by th
   m.dec_emb   decoder's own byte embedding (model.dec_byte_emb, ladder R1)
   m.surprise  prediction-error router (model.router=surprise, ladder R9)
   m.nest      towers for levels >= 2 (latents/nested.py, ladder phases 4-5)
+  m.nextlat   latent transition model for the next-latent loss (model.nextlat, latents/nextlat.py)
 """
 from dataclasses import dataclass, field
 
@@ -63,6 +64,9 @@ def attach_extras(m, mc: dict, device="cuda"):
     if mc.get("nest", {}).get("levels", 1) > 1:
         from latents.nested import Nest
         m.nest = Nest(m, mc, device)
+    if mc.get("nextlat"):
+        from latents.nextlat import NextLat
+        m.nextlat = NextLat(mc["d_model"][-1], D0, **mc["nextlat"]).to(device)
     return m
 
 
@@ -259,10 +263,10 @@ def _lr_mult(p, default):
 
 def param_groups(m: HNetForCausalLM, mc: dict, wd: float):
     """AdamW groups: per-stage LR multiplier (official apply_lr_multiplier) x {decay, no-decay}.
-    Project modules: dec_emb / surprise get the stage-0 multiplier, nested towers the stage-1 one."""
+    Project modules: dec_emb / surprise get the stage-0 multiplier, nested towers and nextlat the stage-1 one."""
     mults = lr_multipliers(mc)
     m.apply_lr_multiplier(mults)
-    for name, mod in (("dec_emb", 0), ("surprise", 0), ("nest", -1)):
+    for name, mod in (("dec_emb", 0), ("surprise", 0), ("nest", -1), ("nextlat", -1)):
         if getattr(m, name, None) is not None:
             for p in getattr(m, name).parameters():
                 p._optim = {"lr_multiplier": mults[mod]}

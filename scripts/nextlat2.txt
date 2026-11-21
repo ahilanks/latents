@@ -1,0 +1,15 @@
+# Next-latent prediction, scale-free loss (fast iteration: one seed, 0.6B bytes of web text, ~10 min).
+# Run:  python scripts/run_jobs.py scripts/nextlat2.txt --gpus 1
+# Why: in NL-h1-s0 the loss was met by making the main network's outputs almost constant (variation 0.4% of their mean
+# square vs 10.8% in side-p06-plain-s0; copying the current state explained 97% of the next). norm: batch measures the
+# error in units of the states' spread. Read val/nl/variation_share, val/nl/explained vs explained_copy, val/bpb.
+python -m latents.train configs/nextlat/h_nl_norm.yaml name=NL-h1n-s0 train.eval_every=500
+# NL-h1n-s0 (norm: batch) was stopped at step 1500: gradient norm ~900, val bpb 2.29 at step 1000. One overall spread instead:
+python -m latents.train configs/nextlat/h_nl_scale.yaml name=NL-h1ns-s0 train.eval_every=500
+# NL-h1ns-s0 (norm: scale, weight 1) was stopped at step 1000: the main network's outputs went constant (variation 3e-7 of
+# their mean square), val bpb 1.96 at step 500 (others 1.78). The same loss at a small weight (run on GPU 0, 2026-11-20):
+python -m latents.train configs/nextlat/h_nl_scale.yaml name=NL-h1ns003-s0 model.nextlat.weight=0.03 train.eval_every=500
+# Every latent-space version was met by shrinking the states' variation (NL-h1ns003-s0: variation 1e-6 of the mean square
+# even at weight 0.03). The paper's KL term alone is scored in byte space and cannot be met that way: the frozen decoder
+# must produce the normal byte distribution from the predicted state (run on GPU 1, 2026-11-20):
+python -m latents.train configs/nextlat/h_nl_kl.yaml name=NL-klonly-s0 model.nextlat.weight=0.0 train.eval_every=500

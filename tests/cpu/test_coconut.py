@@ -114,7 +114,7 @@ def test_train_and_eval_scripts(tmp_path):
                    ROOT / "runs" / base / "final.pt")
         pre = ("import tests.cpu_stubs as S; S.install(); import runpy, sys; sys.argv=")
         r = subprocess.run([sys.executable, "-c", pre + repr(
-            ["coconut_train.py", "--init", f"runs/{base}", f"--name={name}", "--stages", "2", "--stage_steps", "2",
+            ["coconut_train.py", "--init", f"runs/{base}", f"--name={name}", "--stages", "2", "--stage_steps", "2", "--wandb", "0", "--eval_every", "1", "--advance_at", "0.99",
              "--batch", "4", "--eval_n", "3", "--data_dir", "data/_cpu_coco", "--log_every", "1"])
             + "; runpy.run_path('scripts/coconut_train.py', run_name='__main__')"], cwd=ROOT, capture_output=True, text=True)
         assert r.returncode == 0, r.stdout[-1500:] + r.stderr[-2500:]
@@ -132,3 +132,108 @@ def test_train_and_eval_scripts(tmp_path):
         shutil.rmtree(data, ignore_errors=True)
         for n in (base, name, *(f"{name}-stage{s}" for s in (1, 2))):
             shutil.rmtree(ROOT / "runs" / n, ignore_errors=True)
+
+
+def test_question_loss_and_carried_score():
+    from latents.coconut import carried
+    m, mc = make()
+    co = Coconut(m, mc)
+    ps = probs()
+    l1, st = co.loss(ps, [2] * len(ps))  # default: the question's bytes are in the loss
+    l0, _ = co.loss(ps, [2] * len(ps), q_loss=False)
+    assert float(st["ce_question"]) > 0 and "cut_rate_question" in st
+    assert abs(float(l0) - float(st["ce"]) - mc["alpha"] * float(st["ratio_loss"])) < 1e-5  # old loss = after the thoughts
+    assert abs(float(l1) - float(l0)) > 1e-6
+    # the markers are never targets: the question term stops before <start>
+    p = ps[0]
+    b, stop, first, n = example(p, 2)
+    assert b[stop - 1] == START and first == stop + 1
+    # carried value: the last replaced step's value opens the first written step, or is the answer
+    p = tasks.problem(random.Random(3), 3)
+    steps = p["cot"].strip().split(" ")
+    v1 = int(steps[1].rstrip(".").split("=")[-1])
+    good = (" ".join(steps[2:]) + "\n" + p["answer"], 2)
+    assert carried([p], [good], 2) == {"exact": 1.0, "units": 1.0, "tens": 1.0}
+    wrong = steps[2].replace(f"={v1}", f"={(v1 + 10) % 100}", 1)
+    c = carried([p], [(wrong, 2)], 2)
+    assert c["exact"] == 0.0 and c["units"] == 1.0
+    assert carried([p], [(p["answer"], 4)], None)["exact"] == 1.0
+
+
+def test_read_from_the_last_thought():
+    """read="thought": the <stop> chunk is not a main-network position; its bytes are decoded from the output at the last
+    thought. Stage 0 is unchanged, the loss reaches every part, and what is written after thinking does not depend on
+    the <stop> chunk's own input."""
+    m, mc = make()
+    co = Coconut(m, mc, read="thought")
+    ps = probs()
+    seqs = [example(p, 0)[0] for p in ps]
+    with torch.no_grad():
+        lg, _, _, _ = co.forward(seqs, [-1] * len(ps), [0] * len(ps))
+        assert torch.allclose(lg, forward_lm(m, co.batch(seqs)).logits, atol=1e-5)
+    loss, st = co.loss(ps, [2] * len(ps))
+    loss.backward()
+    bb = m.backbone
+    for mod in (bb.encoder, bb.main_network, bb.decoder, bb.routing_module):
+        assert sum(float(p.grad.abs().sum()) for p in mod.parameters() if p.grad is not None) > 0
+    exs = [example(p, 2) for p in ps]
+    with torch.no_grad():
+        l1, bp, _, th = co.forward([e[0] for e in exs], [e[1] for e in exs], [e[3] for e in exs])
+        l2, _, _, _ = Coconut(m, mc, read="stop").forward([e[0] for e in exs], [e[1] for e in exs], [e[3] for e in exs])
+        assert not torch.allclose(l1, l2, atol=1e-4)  # a different read-out from the default
+        # one main-network position fewer than read="stop": the output at the last thought is the <stop> chunk's state
+        th2 = [t + 0.5 * torch.randn_like(t) for t in th]
+        l3, _, _, _ = co.forward([e[0] for e in exs], [e[1] for e in exs], [e[3] for e in exs], thoughts=th2)
+        s0 = exs[0][1]
+        assert not torch.allclose(l1[0, s0], l3[0, s0], atol=1e-5)  # the byte after <stop> is read from the thoughts
+        assert torch.allclose(l1[0, : s0 - 1], l3[0, : s0 - 1], atol=1e-5)  # the question is untouched
+    outs = co.answer(ps[:2], stage=None, max_new=12)
+    assert len(outs) == 2 and all(isinstance(o[0], str) for o in outs)
+
+
+def test_fresh_byte_state_after_start():
+    """fresh=True: the byte-level encoder restarts at <start>, so its states from there on do not depend on the
+    question; the whole forward still trains every part, and stage 0 is unchanged."""
+    m, mc = make()
+    co = Coconut(m, mc, read="thought", fresh=True)
+    ps = probs()
+    p, q = dict(ps[0]), dict(ps[0])
+    c = p["q"][-4]  # the asked variable ("...; d=?\n"): another letter, close to <start> (the CPU stub's memory is short)
+    q["q"] = p["q"][:-4] + ("x" if c != "x" else "y") + p["q"][-3:]
+    exs = [example(p, 2), example(q, 2)]
+    assert len(exs[0][0]) == len(exs[1][0]) and exs[0][0] != exs[1][0]
+    x = co.batch([e[0] for e in exs])
+    B, L = x.shape
+    start = exs[0][1] - 1
+    with torch.no_grad():
+        cu_b, max_b = co.byte_seqs(B, L, [start, start], x.device)
+        assert cu_b.tolist() == [0, start, L, L + start, 2 * L]
+        h, _, _ = co.encode(x, torch.zeros(0, dtype=torch.long), cu_b, max_b)
+        h = h.view(B, L, -1)
+        assert torch.allclose(h[0, start:], h[1, start:], atol=1e-6)  # nothing of the question after <start>
+        assert not torch.allclose(h[0, :start], h[1, :start], atol=1e-4)
+        h0, _, _ = Coconut(m, mc).encode(x, torch.zeros(0, dtype=torch.long))
+        h0 = h0.view(B, L, -1)
+        assert float((h0[0, start] - h0[1, start]).abs().max()) > 1e-5  # default: the question reaches <start>
+        assert float((h[0, start] - h[1, start]).abs().max()) < 1e-7
+        seqs = [example(pp, 0)[0] for pp in ps]
+        lg, _, _, _ = co.forward(seqs, [-1] * len(ps), [0] * len(ps))
+        assert torch.allclose(lg, forward_lm(m, co.batch(seqs)).logits, atol=1e-5)
+    loss, st = co.loss(ps, [2] * len(ps))
+    loss.backward()
+    bb = m.backbone
+    for mod in (bb.encoder, bb.main_network, bb.decoder, bb.routing_module):
+        assert sum(float(pp.grad.abs().sum()) for pp in mod.parameters() if pp.grad is not None) > 0
+    assert len(co.answer(ps[:2], stage=None, max_new=8)) == 2
+
+
+def test_ratio_loss_per_part():
+    m, mc = make()
+    co = Coconut(m, mc)
+    ps = probs()
+    torch.manual_seed(0)
+    l_row, st_row = co.loss(ps, [2] * len(ps))
+    l_parts, st_parts = co.loss(ps, [2] * len(ps), ratio="parts")
+    assert abs(float(st_row["ce"]) - float(st_parts["ce"])) < 1e-6 and float(st_row["ratio_loss"]) != float(st_parts["ratio_loss"])
+    l_parts.backward()
+    assert sum(float(p.grad.abs().sum()) for p in m.backbone.routing_module.parameters() if p.grad is not None) > 0

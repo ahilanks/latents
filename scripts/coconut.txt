@@ -5,4 +5,5 @@
 sh mkdir -p logs/coconut
 sh test -f data/task_arith/test.jsonl || python -m latents.tasks --out data/task_arith
 python scripts/coconut_train.py --init runs/C-B1-plain-cot --name=coco-c1 --c 1 --feed full --stages 7 --stage_steps 500 --batch 128 --lr 1e-4
+barrier
 sh python scripts/coconut_eval.py runs/coco-c1 --n 2000 > logs/coconut/coco-c1.txt 2>&1

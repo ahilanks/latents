@@ -1,0 +1,7 @@
+# Next-latent prediction (NextLat) on the normal H-Net (fast iteration: one seed, 0.6B bytes of web text, ~13 min each).
+# Run:  python scripts/run_jobs.py scripts/nextlat.txt --gpus 1
+# Reference: side-p06-plain-s0 (the same H-Net without the next-latent loss; HF).
+# Read: val/bpb vs the reference; val/nl/explained vs val/nl/explained_copy (is the next state predicted better than
+# by copying the current one); val/nl/state_rank; the cut metrics.
+python -m latents.train configs/nextlat/h_nl.yaml name=NL-h1-s0 train.eval_every=500
+python -m latents.train configs/nextlat/h_nl_kl.yaml name=NL-h1kl-s0 train.eval_every=500

@@ -1,0 +1,18 @@
+# Next-latent prediction and the reasoning task (fast iteration: one seed, ~7 min per fine-tune on written reasoning).
+# Run after scripts/nextlat.txt:  python scripts/run_jobs.py scripts/nextlat_cot.txt --gpus 1
+#   NLc-f3      the 3B normal H-Net, next-latent loss only in the fine-tune   (pair: C-B1-plain-cot, 94.6%)
+#   NLc-p06nl   the 0.6B H-Net pretrained with the next-latent loss, loss kept on in the fine-tune
+#   NLc-p06nln  the same with the scale-free loss (NL-h1n-s0, norm: batch) in both
+#   Cc-p06      the 0.6B normal H-Net, plain fine-tune                         (pair of the two above)
+# Then the written-reasoning accuracy of each on 2000 test problems (no thoughts; C-B1-plain-cot re-scored the same way).
+sh test -f data/task_arith/test.jsonl || python -m latents.tasks --out data/task_arith
+python -m latents.train configs/nextlat/arith_nl.yaml name=NLc-f3 train.init_from=runs/side-f3-plain-s1/final.pt train.micro_batch=16
+python -m latents.train configs/nextlat/arith_nl.yaml name=NLc-p06nl train.init_from=runs/NL-h1-s0/final.pt train.micro_batch=16
+python -m latents.train configs/nextlat/arith_nl_norm.yaml name=NLc-p06nln train.init_from=runs/NL-h1n-s0/final.pt train.micro_batch=16
+python -m latents.train configs/task/arith_plain.yaml name=Cc-p06 train.init_from=runs/side-p06-plain-s0/final.pt train.micro_batch=16
+barrier
+sh mkdir -p logs/nextlat && for r in C-B1-plain-cot NLc-f3 NLc-p06nl NLc-p06nln Cc-p06; do python scripts/coconut_eval.py runs/$r --n 2000 --modes written > logs/nextlat/written_$r.txt 2>&1; done
+# Added 2026-11-20: the byte-space-only variant (NL-klonly-s0, the one version whose states stay varied), same fine-tune.
+python -m latents.train configs/nextlat/arith_nl_kl.yaml name=NLc-p06kl train.init_from=runs/NL-klonly-s0/final.pt train.micro_batch=16
+barrier
+sh python scripts/coconut_eval.py runs/NLc-p06kl --n 2000 --modes written > logs/nextlat/written_NLc-p06kl.txt 2>&1

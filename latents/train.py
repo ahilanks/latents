@@ -348,6 +348,9 @@ def evaluate(model, data, mc, tc, lat=None, max_windows=None, val=None, prefix="
             if lat is not None:
                 for k, mval in lat.eval_metrics(model, out, x).items():
                     lat_acc[k] = lat_acc.get(k, 0.0) + mval
+            if getattr(model, "nextlat", None) is not None:
+                for k, mval in model.nextlat.eval_metrics(out).items():
+                    lat_acc[k] = lat_acc.get(k, 0.0) + mval
         ce = F.cross_entropy(out.logits.float().flatten(0, 1), y.flatten(), reduction="sum")
         acc[0] += ce.double()
         acc[1] += data.target_bytes(y).sum().double()
@@ -544,6 +547,11 @@ def main(argv):
                     l_rt, st_rt = routing_losses(model, out, mc)
                     loss = loss + l_rt
                     for k, v in st_rt.items():
+                        stats[k] = stats.get(k, 0) + v / accum
+                if getattr(model, "nextlat", None) is not None:  # next-latent prediction (latents/nextlat.py)
+                    l_nl, st_nl = model.nextlat.loss(model, out, x, mc)
+                    loss = loss + l_nl
+                    for k, v in st_nl.items():
                         stats[k] = stats.get(k, 0) + v / accum
                 if lat is not None:
                     l_lat, lat_stats = lat.loss(model, out, x, step=step, total_steps=total_steps, scale=lscale)

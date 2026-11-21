@@ -17,6 +17,17 @@ nowhere. Stage 0 (no thoughts, no markers) is plain written-reasoning training w
 
 feed = "full"   the thought is the main network's full-width output (Coconut's way)
        "input"  the decoder-facing part of the output, padded like a normal chunk input
+read = "stop"     the first bytes after thinking are decoded from the main network's output at the <stop> chunk, an
+                  extra position after the thoughts (Coconut's <eot>). The last calculation can then be done there,
+                  in an output that is never fed back: at the next stage it has to be relearned inside the thoughts
+                  (2026-11-20: one hidden calculation learned, the second stuck at the tens digit).
+       "thought"  the <stop> chunk is not a main-network position; the decoder reads the output at the last thought
+                  instead. The state that writes the next step at stage s is exactly the new thought of stage s+1.
+fresh = True     the byte-level encoder and decoder restart at <start>: their own memory of the question is cut, so
+                 everything written after thinking has to come through the main network (its attention to the
+                 question's chunks and to the thoughts). Without it the hidden value is produced jointly by the main
+                 network's output and the byte-level path (2026-11-20: exchanging only the read-out state between
+                 problems gives neither problem's value), so no thought ever holds a complete result.
 1-level H-Nets with a learned (or fixed-chunk) router, no latent objective needed.
 """
 import torch
@@ -50,10 +61,10 @@ def example(p, stage, c=1):
 
 
 class Coconut:
-    def __init__(self, model, mc, c=1, feed="full"):
+    def __init__(self, model, mc, c=1, feed="full", read="stop", fresh=False):
         assert not mc.get("nest"), "1-level H-Nets only"
-        assert feed in ("full", "input")
-        self.m, self.mc, self.c, self.feed = model, mc, int(c), feed
+        assert feed in ("full", "input") and read in ("stop", "thought")
+        self.m, self.mc, self.c, self.feed, self.read, self.fresh = model, mc, int(c), feed, read, bool(fresh)
         self.bb = model.backbone
         self.inner = self.bb.main_network
         self.iso = self.inner.main_network
@@ -83,11 +94,23 @@ class Coconut:
         """The next input made from a main-network output (D1)."""
         return z_last if self.feed == "full" else self.pad(z_last[:, : self.D0])
 
-    def encode(self, x, force):
-        """Encoder + router with boundaries forced at the flat byte indices `force`."""
+    def byte_seqs(self, B, L, starts, device):
+        """Sequence offsets for the byte-level encoder and decoder: one sequence per row, or (fresh) two for a row
+        with thoughts, the second starting at its <start> byte. Returns (cu, longest sequence)."""
+        pts = {b * L for b in range(B + 1)}
+        if self.fresh:
+            pts |= {b * L + s for b, s in enumerate(starts) if s > 0}
+        pts = sorted(pts)
+        return torch.tensor(pts, device=device, dtype=torch.int32), max(j - i for i, j in zip(pts[:-1], pts[1:]))
+
+    def encode(self, x, force, cu_b=None, max_b=None):
+        """Encoder + router with boundaries forced at the flat byte indices `force`. cu_b / max_b: the byte-level
+        sequences the encoder runs over (default: one per row)."""
         B, L = x.shape
         cu = torch.arange(B + 1, device=x.device, dtype=torch.int32) * L
-        h = self.bb.encoder(self.m.embeddings(x).flatten(0, 1), cu_seqlens=cu, max_seqlen=L)
+        if cu_b is None:
+            cu_b, max_b = cu, L
+        h = self.bb.encoder(self.m.embeddings(x).flatten(0, 1), cu_seqlens=cu_b, max_seqlen=max_b)
         if self.mc.get("pool_k"):
             bp = fixed_routing(B, L, self.mc["pool_k"], x.device)
         else:
@@ -124,7 +147,8 @@ class Coconut:
         B, L = x.shape
         force = torch.tensor([b * L + i for b, s in enumerate(stops) if s > 0 for i in (s - 1, s)], device=x.device,
                              dtype=torch.long)
-        h, cu, bp = self.encode(x, force)
+        cu_b, max_b = self.byte_seqs(B, L, [s - 1 if s > 0 else -1 for s in stops], x.device)
+        h, cu, bp = self.encode(x, force, cu_b, max_b)
         residual = self.bb.residual_proj(h.to(self.bb.residual_proj.weight.dtype))
         hc, cu1, _, _ = self.bb.chunk_layer(h, bp.boundary_mask, cu)
         mv = bp.boundary_mask.view(B, L)
@@ -134,21 +158,35 @@ class Coconut:
         if thoughts is None:
             thoughts = self.thoughts([rows[b][: qn[b]] if n_thoughts[b] else rows[b][:1] for b in range(B)],
                                      [n if s > 0 else 0 for n, s in zip(n_thoughts, stops)])
-        seqs = [torch.cat((rows[b][: qn[b]], thoughts[b].to(rows[b].dtype), rows[b][qn[b]:]), 0) for b in range(B)]
+        nt = [thoughts[b].shape[0] for b in range(B)]
+        # read="thought": the <stop> chunk (index qn) is left out of the main network and gets the output at the last thought
+        skip = [1 if (self.read == "thought" and nt[b] > 0) else 0 for b in range(B)]
+        seqs = [torch.cat((rows[b][: qn[b]], thoughts[b].to(rows[b].dtype), rows[b][qn[b] + skip[b]:]), 0) for b in range(B)]
         z, zcu = self.run_main(seqs)
-        keep = torch.cat([torch.cat((torch.ones(qn[b], dtype=torch.bool), torch.zeros(thoughts[b].shape[0], dtype=torch.bool),
-                                     torch.ones(rows[b].shape[0] - qn[b], dtype=torch.bool))) for b in range(B)]).to(z.device)
-        zc = z[keep][..., : self.D0]
+        idx = []  # per real chunk, its position in the main-network sequence
+        for b in range(B):
+            o = int(zcu[b])
+            idx.append(torch.arange(qn[b]) + o)
+            if skip[b]:
+                idx.append(torch.tensor([o + qn[b] + nt[b] - 1]))
+            idx.append(torch.arange(rows[b].shape[0] - qn[b] - skip[b]) + o + qn[b] + nt[b])
+        zc = z[torch.cat(idx).to(z.device)][..., : self.D0]
         out = self.bb.dechunk_layer(zc, bp.boundary_mask, bp.boundary_prob, cu1)
         hd = self.bb.residual_func(out.to(residual.dtype), residual, bp.selected_probs).to(out.dtype)
-        hd = self.bb.decoder(hd, cu_seqlens=cu, max_seqlen=L)
+        hd = self.bb.decoder(hd, cu_seqlens=cu_b, max_seqlen=max_b)
         real = torch.arange(L, device=x.device)[None, :] < torch.tensor([len(s) for s in byte_seqs], device=x.device)[:, None]
         return self.m.lm_head(hd).view(B, L, -1), bp, real, thoughts
 
     # ------------------------------------------------------------------ training loss
-    def loss(self, probs, stages, alpha=None):
+    def loss(self, probs, stages, alpha=None, q_loss=True, ratio="row"):
         """Next-byte loss on what follows the thoughts (stage 0: on what follows the question), plus H-Net's ratio
-        loss on the real bytes. stages: per problem."""
+        loss on the real bytes. stages: per problem.
+        q_loss: also the normal next-byte loss on the question's own bytes (not on the markers). Without it nothing
+        but the ratio loss acts on the question's cuts, and they are removed within a stage or two (2026-11-20: the
+        question became one chunk and its numbers could no longer be read).
+        ratio: "row" = H-Net's ratio loss over all real bytes; "parts" = the same loss on the question's bytes and on
+        the bytes from <start> on separately (their mean), so that cuts cannot be moved from the question to the part
+        after thinking (coco-fresh, 2026-11-20: question cut rate 0.135 -> 0.03 in 1300 steps with "row")."""
         exs = [example(p, s, self.c) for p, s in zip(probs, stages)]
         byte_seqs = [e[0] for e in exs]
         logits, bp, real, _ = self.forward(byte_seqs, [e[1] for e in exs], [e[3] for e in exs])
@@ -156,18 +194,28 @@ class Coconut:
         x = self.batch(byte_seqs)
         pos = torch.arange(L - 1, device=x.device)[None, :]
         first = torch.tensor([e[2] for e in exs], device=x.device)[:, None]
+        qlen = torch.tensor([e[1] - 1 if e[1] > 0 else e[2] for e in exs], device=x.device)[:, None]  # question bytes
         lens = torch.tensor([len(s) for s in byte_seqs], device=x.device)[:, None]
         on = (pos + 1 >= first) & (pos + 1 < lens)  # predict bytes first..end-1 from positions first-1..end-2
+        on_q = pos + 1 < qlen
         ce = F.cross_entropy(logits[:, :-1].float().flatten(0, 1), x[:, 1:].flatten(), reduction="none").view(B, L - 1)
         l_ce = (ce * on).sum() / on.sum().clamp(min=1)
+        l_q = (ce * on_q).sum() / on_q.sum().clamp(min=1)
+        l_byte = (ce * (on | on_q)).sum() / (on | on_q).sum().clamp(min=1) if q_loss else l_ce
         N = float(self.mc.get("N", 6))
-        rm = real.flatten()
-        Fm = bp.boundary_mask[rm].float().mean()
-        G = bp.boundary_prob[..., -1][rm].float().mean()
-        l_ratio = N / (N - 1) * ((N - 1) * Fm * G + (1 - Fm) * (1 - G))
+        mq = (torch.arange(L, device=x.device)[None, :] < qlen)
+        bm, bpr = bp.boundary_mask.view(B, L), bp.boundary_prob[..., -1].view(B, L)
+
+        def ratio_of(mask):
+            Fm_, G_ = bm[mask].float().mean(), bpr[mask].float().mean()
+            return N / (N - 1) * ((N - 1) * Fm_ * G_ + (1 - Fm_) * (1 - G_))
+        Fm = bm[real].float().mean()
+        l_ratio = 0.5 * (ratio_of(mq) + ratio_of(real & ~mq)) if ratio == "parts" else ratio_of(real)
         a = float(self.mc.get("alpha", 0.03) if alpha is None else alpha)
-        return l_ce + a * l_ratio, {"ce": l_ce.detach(), "ratio_loss": l_ratio.detach(),
-                                    "thoughts": sum(e[3] for e in exs) / len(exs), "cut_rate": Fm.detach()}
+        cut_q = bm[mq].float().mean()
+        return l_byte + a * l_ratio, {"ce": l_ce.detach(), "ce_question": l_q.detach(), "ratio_loss": l_ratio.detach(),
+                                      "thoughts": sum(e[3] for e in exs) / len(exs), "cut_rate": Fm.detach(),
+                                      "cut_rate_question": cut_q.detach()}
 
     # ------------------------------------------------------------------ evaluation
     @torch.no_grad()
@@ -219,3 +267,24 @@ def score(probs, outs):
             "by_steps": {k: sum(v) / len(v) for k, v in sorted(by.items())},
             "mean_thoughts": sum(n for _, n in outs) / max(len(outs), 1),
             "mean_bytes_written": sum(len(t.encode()) for t, _ in outs) / max(len(outs), 1)}
+
+
+def carried(probs, outs, stage=None):
+    """The first number the model has to know from its thoughts: the value of the last replaced step, which opens the
+    first step it writes ("c=42*3=26." -> 42), or the answer when every step is a thought. Share exactly right, and
+    with the units / tens digit right (tens of a one-digit number = 0)."""
+    import re
+    ex = un = te = 0
+    for p, (txt, _) in zip(probs, outs):
+        spans = step_spans(p["cot"])
+        k = len(spans) if stage is None else min(stage, len(spans))
+        if k == 0:
+            continue
+        true = spans[k - 1][3]
+        m = re.match(r"[a-z]=(\d+)", txt) if k < len(spans) else re.match(r"#### (\d+)", txt)
+        got = int(m.group(1)) if m else -1
+        ex += got == true
+        un += got >= 0 and got % 10 == true % 10
+        te += got >= 0 and got // 10 == true // 10
+    n = max(len(probs), 1)
+    return {"exact": ex / n, "units": un / n, "tens": te / n}

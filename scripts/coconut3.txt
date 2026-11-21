@@ -1,0 +1,20 @@
+# Coconut, the rest of the curriculum from the model that has learned one hidden step (coco-c1q, 2026-11-20).
+# Stages 3-7 (2 to 6 calculations hidden; stage 7 = every step of the longest training problem). A stage ends as soon
+# as the first number needed from the thoughts is right on 90% of the 200 quick-eval problems (checked every 250
+# steps), or after 3000 steps. Then the full eval (2000 problems): all thoughts, no thoughts, written reasoning.
+# Run:  python scripts/run_jobs.py scripts/coconut3.txt --gpus 0
+python scripts/coconut_train.py --init runs/coco-c1q --name=coco-c1q-rest --c 1 --first_stage 3 --stages 7 --stage_steps 3000 --eval_every 250 --advance_at 0.9
+barrier
+sh python scripts/coconut_eval.py runs/coco-c1q-rest --n 2000 > logs/coconut/coco-c1q-rest.txt 2>&1
+# Side tests of what speeds up stage 3 (two hidden calculations), each from coco-c1q, stage 3 only, same cap and rule
+# (started by hand side by side on GPU 1, 2026-11-20; compare the stage-3 evals with coco-c1q-rest: lr 1e-4, no mixing):
+#   python scripts/coconut_train.py --init runs/coco-c1q --name=coco-c1q-s3-lr3 --c 1 --first_stage 3 --stages 3 --stage_steps 3000 --eval_every 250 --advance_at 0.9 --lr 3e-4
+#   python scripts/coconut_train.py --init runs/coco-c1q --name=coco-c1q-s3-mix --c 1 --first_stage 3 --stages 3 --stage_steps 3000 --eval_every 250 --advance_at 0.9 --p_mix 0.3
+# 2026-11-20: 3000 steps were not enough for stage 3 (ones digit 95%, tens digit 15% at step 2500; stage 2 needed ~3000
+# for the tens digit with one calculation). coco-c1q-rest was stopped at the end of stage 3 and continued from its
+# stage-3 checkpoint with an 8000-step limit per stage (fresh optimizer and schedule):
+#   python scripts/coconut_train.py --init runs/coco-c1q-rest-stage3 --name=coco-c1q-long --c 1 --first_stage 3 --stages 7 --stage_steps 8000 --eval_every 250 --advance_at 0.9
+# The two side tests were stopped at step ~1000: neither learned the ones digit faster than lr 1e-4 without mixing
+# (ones digit at 250/500/750 steps: 20/31/40% base, 16/28/31% lr 3e-4, 18/30/38% mixing 0.3).
+# The slow part is the tens digit, so the higher learning rate is tested there instead (GPU 1), from the same checkpoint:
+#   python scripts/coconut_train.py --init runs/coco-c1q-rest-stage3 --name=coco-c1q-long-lr3 --c 1 --first_stage 3 --stages 3 --stage_steps 8000 --eval_every 250 --advance_at 0.9 --lr 3e-4

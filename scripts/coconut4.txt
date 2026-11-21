@@ -1,0 +1,44 @@
+# Coconut on the byte H-Net, read-out from the last thought (2026-11-20; --read thought, latents/coconut.py).
+# Why: with a separate <stop> position (coco-c1q...) one hidden calculation is learned (96%) but the second stalls at
+# the tens digit (20% after 7000 steps): the last calculation is done at <stop>, whose output is never fed back, so the
+# thoughts do not hold the first hidden value in full (probe: tens digit 16%). Here the decoder reads the output at the
+# last thought, so the state that writes the next step at stage s is the new thought of stage s+1.
+# Whole curriculum from the written-reasoning model; a stage ends when the number needed from the thoughts is right on
+# 90% of 200 quick-eval problems (checked every 250 steps) or after 8000 steps. Then the full eval (2000 problems).
+# Run:  python scripts/run_jobs.py scripts/coconut4.txt --gpus 1
+python scripts/coconut_train.py --init runs/C-B1-plain-cot --name=coco-rt --c 1 --read thought --stages 7 --stage_steps 8000 --eval_every 250 --advance_at 0.9
+barrier
+sh python scripts/coconut_eval.py runs/coco-rt --n 2000 > logs/coconut/coco-rt.txt 2>&1
+# Same with the input-shaped feed (the thought is only the half of the output the decoder reads, padded like a normal
+# chunk input), the last variant of the fast-iteration plan; started by hand on GPU 0, 2026-11-20:
+#   python scripts/coconut_train.py --init runs/C-B1-plain-cot --name=coco-rt-in --c 1 --read thought --feed input --stages 7 --stage_steps 8000 --eval_every 250 --advance_at 0.9
+# coco-rt was stopped at step 9750: stage 2 learned in 2750 steps (95.5%), stage 3 again stuck (ones digit 100%, tens
+# digit 17-20% after 6750 steps). Probes and an exchange test (logistics, 2026-11-20) show the hidden value is produced
+# jointly by the main network's output and the byte-level encoder/decoder, which keep their own memory of the question.
+# --fresh 1 restarts the byte-level modules at <start>: only the main network connects the question to what is written
+# after thinking (started by hand on GPU 1):
+#   python scripts/coconut_train.py --init runs/C-B1-plain-cot --name=coco-fresh --c 1 --read thought --fresh 1 --stages 7 --stage_steps 8000 --eval_every 250 --advance_at 0.9
+# coco-fresh stopped at step 1300: with the byte-level restart, cuts are worth more after the thoughts and the row-wide
+# cut-count loss took them from the question (cut rate 0.135 -> 0.03; loss after the thoughts 0.28 -> 0.70).
+# --ratio parts applies the cut-count loss to the question and to the part from <start> on separately (GPU 1):
+#   python scripts/coconut_train.py --init runs/C-B1-plain-cot --name=coco-fresh2 --c 1 --read thought --fresh 1 --ratio parts --stages 7 --stage_steps 8000 --eval_every 250 --advance_at 0.9
+# coco-rt-in stopped at step 7000: stage 3 stuck like the others (ones digit 100%, tens digit 12-20% after 4000 steps).
+# coco-fresh2 (per-part cut-count loss) learned stage 1 in 1000 steps with the question's cuts kept. The same with the
+# input-shaped feed, as a hedge (GPU 0):
+#   python scripts/coconut_train.py --init runs/C-B1-plain-cot --name=coco-fresh2-in --c 1 --read thought --feed input --fresh 1 --ratio parts --stages 7 --stage_steps 8000 --eval_every 250 --advance_at 0.9
+# coco-fresh2 reached the 8000-step limit of stage 2 with the tens digit at 29% and still rising (15% at 5000 steps;
+# coco-fresh2-in 39% at 6750). Stopped there and continued from its stage-2 checkpoint with a 20000-step limit (GPU 1):
+#   python scripts/coconut_train.py --init runs/coco-fresh2-stage2 --name=coco-fresh2-long --c 1 --read thought --fresh 1 --ratio parts --first_stage 2 --stages 7 --stage_steps 20000 --eval_every 500 --advance_at 0.9
+# coco-fresh2-in reached the limit of stage 2 with the tens digit at ~40%; continued the same way (GPU 0):
+#   python scripts/coconut_train.py --init runs/coco-fresh2-in-stage2 --name=coco-fresh2-in-long --c 1 --read thought --feed input --fresh 1 --ratio parts --first_stage 2 --stages 7 --stage_steps 20000 --eval_every 500 --advance_at 0.9
+# 21:15 PT: coco-fresh2-long stopped after 8000 more steps (16,000 on this stage): tens digit 22-37%, not rising, and the
+# ones digit dipped to 72% on the way. coco-fresh2-in-long (input-shaped feed) keeps rising: 39% -> 56% over 6000 steps.
+# Speed test for the stages still to come, from the same stage-2 checkpoint at 3x the learning rate (GPU 1):
+#   python scripts/coconut_train.py --init runs/coco-fresh2-in-stage2 --name=coco-fresh2-in-lr3 --c 1 --read thought --feed input --fresh 1 --ratio parts --first_stage 2 --stages 2 --stage_steps 20000 --eval_every 500 --advance_at 0.9 --lr 3e-4
+# 21:20 PT: coco-fresh2-in-long learned the first hidden calculation without the byte-level shortcut (hidden value 91%
+# after 16,500 steps on that stage) and went on to stage 3 by itself. coco-fresh2-in-lr3 (lr 3e-4) was slower (tens digit
+# 34.5% after 2000 steps vs 43%) and was stopped. A second seed of the whole recipe from the start (GPU 1):
+#   python scripts/coconut_train.py --init runs/C-B1-plain-cot --name=coco-fresh2-in-seed1 --seed 1 --c 1 --read thought --feed input --fresh 1 --ratio parts --stages 7 --stage_steps 20000 --eval_every 500 --advance_at 0.9
+# Control for "do the thoughts help?" (user, 2026-11-20): the same curriculum and settings with NO thoughts (--c 0): the
+# steps are deleted but nothing is fed back; the model only has the <start> and <stop> positions (GPU 1, next to seed 1):
+#   python scripts/coconut_train.py --init runs/C-B1-plain-cot --name=coco-fresh2-nothoughts --c 0 --fresh 1 --ratio parts --stages 2 --stage_steps 20000 --eval_every 500 --advance_at 0.9

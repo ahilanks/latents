@@ -24,6 +24,7 @@ frequent words that occur at least 5 times):
   examples                        a few contexts: the prediction's nearest words vs the word that came
 
 usage: python scripts/latent_geometry.py out.json "Label=runs/<run>" ... [--windows 32] [--plot out.png]
+       python scripts/latent_geometry.py out.json --replot out.png      (redraw the figure from a saved out.json)
 Models without a latent head (normal H-Nets) are skipped.
 """
 import argparse
@@ -209,14 +210,48 @@ def word_geometry(d, words, n_words=300, min_count=5, seed=0):
     return res
 
 
+def plot(res, path):
+    """One panel per text (web, chains), one line per model, the legend under the panels."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    kinds = [k for k in ("web", "chains") if any(k in r for r in res.values())]
+    titles = {"web": "web text", "chains": "arithmetic chains (next step fully determined)"}
+    colors = ["#2a78d6", "#7fb2ea", "#d9662b", "#1f2430", "#3a9d5d", "#8e5bbf"]
+    fig, axes = plt.subplots(1, len(kinds), figsize=(5.6 * len(kinds), 4.3), dpi=150, sharey=True, squeeze=False)
+    for ax, kind in zip(axes[0], kinds):
+        for (label, r), c in zip(res.items(), colors):
+            if kind in r:
+                ys = r[kind]["r2_by_direction"]
+                ax.plot(range(1, len(ys) + 1), ys, color=c, label=label, lw=1.6)
+        ax.axhline(0, color="#999", lw=0.8)
+        ax.set_xscale("log")
+        ax.set_xlabel("direction of the targets (1 = the one with the most variation)")
+        ax.set_title(titles[kind], fontsize=10, loc="left")
+        ax.set_ylim(-0.5, 1.0)
+        ax.grid(alpha=0.3)
+        for sp in ("top", "right"):
+            ax.spines[sp].set_visible(False)
+    axes[0][0].set_ylabel("share of variation the prediction explains")
+    h, lab = axes[0][0].get_legend_handles_labels()
+    fig.legend(h, lab, loc="lower center", ncol=len(lab), frameon=False, fontsize=9)
+    fig.tight_layout(rect=(0, 0.07, 1, 1))
+    fig.savefig(path)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("out")
-    ap.add_argument("methods", nargs="+", help='"Label=runs/<run>"')
+    ap.add_argument("methods", nargs="*", help='"Label=runs/<run>"')
     ap.add_argument("--windows", type=int, default=32, help="windows of each text kind")
     ap.add_argument("--data", default="data/fwe")
     ap.add_argument("--plot", default=None)
+    ap.add_argument("--replot", default=None, help="only redraw the figure from the saved out.json")
     a = ap.parse_args()
+    if a.replot:
+        plot(json.load(open(a.out)), a.replot)
+        print("saved", a.replot)
+        return
     dev = "cuda" if torch.cuda.is_available() else "cpu"
     rng = random.Random(7)
     chains = b"".join(bytes([BOS]) + tasks.document(tasks.problem(rng, rng.randint(2, 6))) for _ in range(20000))
@@ -250,24 +285,7 @@ def main():
         del model, lat
     json.dump(res, open(a.out, "w"), indent=1)
     if a.plot and res:
-        import matplotlib
-        matplotlib.use("Agg")
-        import matplotlib.pyplot as plt
-        fig, ax = plt.subplots(figsize=(7.5, 4.2), dpi=150)
-        for label, r in res.items():
-            for kind, ls in (("web", "-"), ("chains", "--")):
-                if kind in r:
-                    ax.plot(range(1, len(r[kind]["r2_by_direction"]) + 1), r[kind]["r2_by_direction"], ls,
-                            label=f"{label} ({kind})", lw=1.5)
-        ax.axhline(0, color="#999", lw=0.8)
-        ax.set_xscale("log")
-        ax.set_xlabel("target direction (1 = the one with the most variation)")
-        ax.set_ylabel("share of variation the prediction explains")
-        ax.set_ylim(-0.5, 1.0)
-        ax.legend(fontsize=7, frameon=False)
-        ax.grid(alpha=0.3)
-        fig.tight_layout()
-        fig.savefig(a.plot)
+        plot(res, a.plot)
         print("saved", a.plot)
 
 
