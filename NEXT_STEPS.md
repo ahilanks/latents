@@ -7,6 +7,14 @@ Diagrams: `docs/holes_recipe.png` (the recipe), `docs/holes_vs_jepa.png` (why no
 Like the Coconut direction, this trains the whole model with the next-byte loss; the latent-only goal further down
 stays the long-term north star, not what this plan does.
 
+**Status (2026-11-23, 20:00 PT): pretraining checks failed, reasoning not run.** The loop switches the H-Net's main
+network off (outputs nearly the same for every chunk) in every variant whose fed-back vector grows as large as the
+chunk input, including both Latent-Feedback-faithful versions (end to end and detached); the only healthy variant (slow
+loop: feedback layer at 0.1× the learning rate) matches plain on compression (1.3666) but its loop carries nothing into
+holes (+0.0004 bpb). Details: `logistics.md`, entries of 2026-11-23 19:45 and 20:00 PT. Code for every step below is
+built (`latents/holes.py`, `latents/health.py`, `scripts/holes_*.py`, `configs/holes/`, `scripts/holes_ft.txt` for
+the fine-tunes).
+
 ### The idea
 - **The loop.** Every chunk's input to the main network also gets the previous chunk's final output, through a small
   layer that starts at zero (the existing `Feedback` module: LayerNorm then Linear). So a model starts exactly as the

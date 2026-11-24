@@ -20,8 +20,8 @@ def checks(run):
 
 
 def bars(names, vals, colors, title, sub, ylabel, out, fmt="{:.4f}", ref=None, ref_label=None, ymax=None, yticks=None,
-         pct=False):
-    fig, ax = plt.subplots(figsize=(7.6, 4.8), dpi=200)
+         pct=False, figsize=(7.6, 4.8)):
+    fig, ax = plt.subplots(figsize=figsize, dpi=200)
     used = fs.titles(fig, title, sub)
     fig.subplots_adjust(left=0.12, right=0.97, top=1 - used - 0.06, bottom=0.17)
     top = ymax or max(max(vals), ref or 0) * 1.22
@@ -150,6 +150,65 @@ def fig_flat():
          fmt="{:.1f}%", ymax=max(vals) * 1.25, pct=True, yticks=[0, 5, 10, 15])
 
 
+VARIANTS = [("normal\nH-Net", "HP-plain-s0", fs.GREY), ("old two-pass\nloop (Nov 20)", "FB-h-s0", fs.ORANGE),
+            ("first\nrecipe", "HL-A-s0", fs.BLUE), ("centred\nloop*", "HL-C-s0", fs.BLUE),
+            ("slow\nloop", "HL-S-s0", fs.AQUA), ("paper's form\n(end to end)*", "HL-R-s0", fs.BLUE),
+            ("paper's training\n(not end to end)*", "HL-P-s0", fs.BLUE)]
+STOPPED = "*stopped early on the health alarm (centred at step 1500, the paper runs at step 750; last eval shown)."
+
+
+def last_eval(run):
+    p = ROOT / "runs" / run / "metrics.jsonl"
+    if not p.exists():
+        return None
+    ev = [json.loads(l) for l in open(p)]
+    ev = [r for r in ev if "val/bpb" in r]
+    return ev[-1] if ev else None
+
+
+def fig_variants():
+    """One figure per finding across the loop variants: main network alive?, loop fills holes?, compression."""
+    diag = json.load(open(ROOT / "logs/holes/flat_diag.json"))
+    rows = []
+    for lab, run, col in VARIANTS:
+        d = diag.get(run)
+        le = last_eval(run)
+        killed = (ROOT / "runs" / run / "summary.json").exists() and "killed" in json.load(open(ROOT / "runs" / run / "summary.json"))
+        var = d["swap_nats"] if d else (le or {}).get("val/swap_nats")
+        ck = ROOT / "logs/holes" / f"checks_{run}.json"
+        gain = None
+        if ck.exists():
+            c = json.load(open(ck))
+            gain = c["check2_holes"][f"r{c['trained_rounds']}"]["h/loop_gain_after"]
+        elif le is not None and "val_holes/loop_gain_after" in le:
+            gain = le["val_holes/loop_gain_after"]
+        sm = ROOT / "runs" / run / "summary.json"
+        bpb = json.load(open(sm))["val/bpb"] if sm.exists() and not killed else None
+        rows.append((lab, run, col, var, gain, bpb))
+    ok = [r for r in rows if r[3] is not None]
+    bars([r[0] for r in ok], [r[3] for r in ok], [r[2] for r in ok],
+         "Only the slow loop keeps the main network in use; every other loop switches it off",
+         "How much the decoder uses the main network: rise in its loss (nats per byte) when every chunk's main-network "
+         f"state is swapped for another chunk's, 16 web windows, end of training. {STOPPED} The normal H-Net already "
+         f"had 0.017 at step 750. 0.6B bytes each, single seed.", "loss rise when states are swapped",
+         "holes_variants_main.png", fmt="{:.4f}", ymax=max(r[3] for r in ok) * 1.25, pct=False,
+         yticks=[0, 0.01, 0.02, 0.03], figsize=(10.5, 5.0))
+    g = [r for r in rows if r[4] is not None]
+    bars([r[0] for r in g], [r[4] for r in g], [r[2] for r in g],
+         "No loop variant fills the holes: switching the loop off changes the text after a hole by under 0.001 bits per byte",
+         "Bits per byte on the word after a hole with the loop switched off minus with it on (higher = the loop helps), "
+         f"web validation text with 10% of words deleted. {STOPPED} Single seed.", "bits per byte lost without the loop",
+         "holes_variants_gain.png", fmt="{:+.4f}", ymax=0.005, yticks=[0, 0.001, 0.002, 0.003, 0.004, 0.005], pct=False,
+         figsize=(10.5, 5.0))
+    c = [r for r in rows if r[5] is not None]
+    plain0 = json.load(open(ROOT / "runs/side-p06-plain-s0/summary.json"))["val/bpb"]
+    bars([r[0] for r in c], [r[5] for r in c], [r[2] for r in c],
+         "Compression: the slow loop matches the normal H-Net; the loops that flatten the main network lose 0.006–0.013",
+         f"Bits per byte on the whole web validation set (lower is better). Normal H-Net: same-seed rerun shown; the "
+         f"original run had {plain0:.4f}. Runs stopped early are left out. Single seed.", "bits per byte",
+         "holes_variants_bpb.png", fmt="{:.4f}", ymax=1.6, figsize=(8.5, 4.8))
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("what", nargs="+")
@@ -161,6 +220,9 @@ def main():
             continue
         if w == "flat":
             fig_flat()
+            continue
+        if w == "variants":
+            fig_variants()
             continue
         {"rounds": fig_rounds, "holes": fig_holes, "compression": fig_compression}[w](a.run)
 
