@@ -1,6 +1,110 @@
 # Next steps
 
-Updated Nov 10, 2026. Everything below is implemented; nothing has run on a GPU yet.
+## Current plan (set 2026-11-23): pretrain a true feedback loop with holes
+
+Diagrams: `docs/holes_recipe.png` (the recipe), `docs/holes_vs_jepa.png` (why not a latent target),
+`docs/variants_2026-11-20.png` (what was tried last session and how it did against the plain H-Net).
+Like the Coconut direction, this trains the whole model with the next-byte loss; the latent-only goal further down
+stays the long-term north star, not what this plan does.
+
+### The idea
+- **The loop.** Every chunk's input to the main network also gets the previous chunk's final output, through a small
+  layer that starts at zero (the existing `Feedback` module: LayerNorm then Linear). So a model starts exactly as the
+  plain H-Net.
+- **Holes.** During pretraining some chunks are deleted from the text and a marker byte is left in their place. The
+  marker's slot gets nothing but the fed-back output, and the next-byte loss on the text after the hole is what
+  judges it. Example: in `x=17+25=42. y=x*2=84.` with `=42.` deleted, `=84.` can only be predicted if the hole's output
+  carried the 42.
+- **Reasoning.** Thoughts are the same holes, several in a row after the question; the decoder only writes the answer.
+- **No latent target and no anti-collapse term.** A guess is judged by its usefulness for what follows, not by its
+  distance to a vector, so it does not average the possible futures and there is nothing to shrink toward.
+
+### Why this and not what we already tried
+- **Two-pass feedback (closed):** ran two rounds in training and at test time, so the loop never ran, and two rounds
+  do not settle (Full-bandwidth Transformer). Here: 4 rounds in training, checked against the exact loop, and the exact
+  loop at test time.
+- **True loop (2026-11-20):** added at fine-tuning to a model trained without it, on a task the plain model already
+  solves at 2–6 steps. Here: the loop is there from pretraining, and the tests are ones where carried state should
+  matter.
+- **NextLat / JEPA-style latent losses:** the predictions averaged the possible futures (spread 0.14 vs 1.01) or the
+  main network's outputs went flat even with the decoder on (variation 0.4%, rank 1.5; at 3B 1.309 vs 1.117 bits per
+  byte). Here: no latent target.
+- **Coconut:** a thought's input was new to the model at fine-tuning, and the second hidden calculation never trained.
+  Here: a thought slot is exactly what pretraining trained.
+
+### Recipe details
+1. **Training the loop in parallel rounds** (Full-bandwidth / Latent Feedback, arXiv 2608.08888, 2611.20404).
+   - 4 rounds over the whole row; round k gets round k−1's outputs shifted one chunk later (the first chunk of a row
+     gets nothing).
+   - Gradients flow through every round (end to end). Next-byte loss on the last round.
+   - 15% of updates are a single plain round with no feedback. Latent Feedback found that without such updates the
+     rounds flip back and forth.
+   - Existing code: `latents/models.py` `main_pass` with `feedback: {passes: k}`. Needs the plain-update mix.
+2. **Holes in the pretraining text.**
+   - About 10% of words deleted, in runs of 1–3 consecutive words (geometric), so runs of thoughts are seen in
+     pretraining too. Each deleted word becomes one marker byte (a new byte value, e.g. 3; Coconut uses 1 and 2, BOS
+     is 254).
+   - The marker gets its own chunk: boundaries forced before and after it (as `Coconut.encode` does), so a hole is
+     exactly one slot.
+   - No loss on predicting the marker bytes themselves; the bytes after the hole are normal targets.
+   - The forced cuts are left out of the ratio loss, so they do not push the learned cuts elsewhere.
+   - Holes are whole words (cut at spaces) as a stand-in for chunks; the router still learns its own cuts. Holes at
+     the model's own cuts can come later.
+3. **Test time.** Reasoning: the exact loop, one chunk at a time (`loop_pass`, one problem per row). Compression on long
+   windows: 16 rounds, which should equal the exact loop (check 1 below).
+
+### Runs (fast iteration: one seed, 0.6B bytes of web text, same config and seed as the plain 0.6B H-Net)
+| run | what | why |
+|---|---|---|
+| A | loop + holes | the recipe |
+| B | holes, no loop | control: the hole slot is only an extra position later chunks can attend to (a "pause" slot). Says whether the loop adds anything. |
+| plain | existing `side-p06-plain-s0`, 1.362 bits per byte | no holes, no loop |
+
+A costs about 2× a plain run (the main network runs 4 times; it is about a third of a plain step), so ~25–30 min on
+the 2× H100 pod; B about the same as plain (~12 min). One GPU each.
+
+### Checks after pretraining (no training)
+1. **Is it really the loop?** 4 rounds vs 16 rounds vs the exact loop on short rows: outputs and bits per byte must
+   agree (Latent Feedback: 4 vs 16 rounds differ by 0.00007 in loss). If they do not, fix this first (more rounds).
+2. **Does the loop fill holes?** Bits per byte on the bytes right after holes, A vs B, on the same holes.
+3. **Compression on intact text:** A and B vs plain (1.362). Expect no gain at this size: Latent Feedback gains only
+   with ~75+ tokens of text per parameter on one pass over the data, and we have ~4.
+4. **Cuts:** pictures and cut rate vs plain, including next to holes.
+5. **Is the feedback used?** Size of the feedback layer's weights; zero it at test time and see what changes.
+
+**Stop rule:** if A does not fill holes better than B, the loop carries nothing; diagnose with check 5 before going on.
+
+### Reasoning (from A, B and plain)
+1. **Written reasoning fine-tune** (the usual arithmetic task, `task/arith_plain.yaml`): plain 0.6B gets 84–89%.
+   Checks that written reasoning is not hurt.
+2. **Thoughts as holes:** the same fine-tune with written steps replaced by markers (3 per deleted step, the count read
+   off the question, as in our Coconut runs), one step at a time as in Coconut (stage s replaces the first s steps).
+   No loss on markers; loss on what follows. At test time: question, markers, then the model writes the answer, with
+   the exact loop.
+   - Measure: the first hidden value right at each stage; answers with all thoughts; no-thoughts control (markers
+     removed); by number of steps; longer problems (2–12 steps).
+   - **The key test:** Coconut stalled at the second hidden calculation (its carry digit at 14–22%). Does the loop get
+     past it, and does B (pause slots) not?
+3. **Answering directly** (no markers, no written steps): plain and the old loop both got 3.5%.
+
+### What would count as working
+- Pretraining: check 1 passes, A fills holes better than B, compression within ~0.01 of plain.
+- Reasoning: two or more hidden calculations learned, and accuracy with thoughts approaching written reasoning.
+- Then, and only then: seeds, 3B bytes, harder tasks.
+
+### To build (CPU tests first)
+- `latents/train.py`: the plain-update mix for the rounds; evaluation with more rounds.
+- Data: the hole transform in the byte loader (delete words, insert markers, loss mask, positions to force cuts);
+  rate and run length in the config.
+- Model: forced cuts at markers in the normal forward; ratio loss without forced cuts.
+- Eval: round-vs-exact-loop check; bits per byte after holes; cut pictures with markers; feedback size and zeroing.
+- Reasoning: fine-tune data with steps replaced by markers; generation that appends markers and then writes the answer
+  with the exact loop.
+- `configs/holes/*.yaml`, job file `scripts/holes.txt`, tests `tests/cpu/test_holes.py`.
+
+---
+
+*Below: the earlier plan (updated Nov 10, 2026), kept for reference.*
 
 ## Goal
 
