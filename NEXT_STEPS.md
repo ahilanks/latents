@@ -96,7 +96,7 @@ diagnose with check 5 before going on.
    ProntoQA / ProsQA, the language tasks of the Coconut paper. Short sentences, so the 0.6B model can learn it;
    2–6 hops in training, longer at test. Plain H-Net written-reasoning fine-tune as the reference.
 
-### H-Net health during training (user, 2026-11-23): must look like normal training
+### H-Net health during training (user, 2026-11-23): must look like the normal H-Net
 Checked at every eval in pretraining **and** in the reasoning fine-tunes, side by side with the plain H-Net at the same
 step (pretraining: `side-p06-plain-s0`'s `metrics.jsonl`; fine-tunes: the plain written-reasoning fine-tunes `Cc-p06*`;
 both on HF). One health figure per update, recipe vs plain. If a number leaves plain's range, stop and fix it before
