@@ -1,0 +1,5 @@
+# Fix 2 (2026-11-24): the hole recipe with a slow loop. The feedback layer learns 10x slower than the rest of the
+# main network (it starts at zero; in HL-A-s0 its weights grew to norm 16 while the outputs went flat).
+base: holes/loop_holes.yaml
+model:
+  feedback: {passes: 4, plain_frac: 0.15, lr_mult: 0.1}

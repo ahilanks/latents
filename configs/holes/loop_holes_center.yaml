@@ -1,0 +1,6 @@
+# Fix 1 (2026-11-24): the hole recipe with a centred loop. The fed-back vector minus its average over the row's chunks
+# so far, so the loop can never act as a constant offset. In HL-A-s0 (and the old two-pass run FB-h-s0) the main
+# network's state became a huge near-constant and its outputs went flat (variation 0.4% vs 15%, rank 1.4 vs 23).
+base: holes/loop_holes.yaml
+model:
+  feedback: {passes: 4, plain_frac: 0.15, center: true}

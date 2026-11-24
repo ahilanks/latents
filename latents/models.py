@@ -83,26 +83,31 @@ def attach_extras(m, mc: dict, device="cuda"):
 def attach_feedback(m, mc, device="cuda"):
     """Add the feedback module described by mc["feedback"] to a model (also to a loaded plain model: it starts at zero)."""
     m.feedback = Feedback(mc["d_model"][-1], **{k: v for k, v in mc["feedback"].items()
-                                                if k not in ("passes", "mode", "plain_frac")}).to(device)
+                                                if k not in ("passes", "mode", "plain_frac", "center", "lr_mult")}).to(device)
     m._feedback_cfg = dict(mc["feedback"])
     return m
 
 
 class Feedback(nn.Module):
     """Maps the main network's last-layer output at chunk t to an addition to its input at chunk t+1. The output
-    layer starts at zero, so a model with feedback starts exactly as the same model without it."""
+    layer starts at zero, so a model with feedback starts exactly as the same model without it.
+    norm="layer", bias=True: LayerNorm then Linear (the original module; both have a learned term that is the same
+    for every chunk). norm="rms", bias=False: W rms(z), the form of Latent Feedback (arXiv 2611.20404, eq. 1), with
+    nothing that can add a constant."""
 
-    def __init__(self, D1, hidden=0):
+    def __init__(self, D1, hidden=0, norm="layer", bias=True):
         super().__init__()
-        self.norm = nn.LayerNorm(D1)
+        self.norm = nn.LayerNorm(D1) if norm == "layer" else nn.RMSNorm(D1, eps=1e-5)
+        bias = bool(bias)
         if hidden:
-            self.net = nn.Sequential(nn.Linear(D1, int(hidden)), nn.GELU(), nn.Linear(int(hidden), D1))
+            self.net = nn.Sequential(nn.Linear(D1, int(hidden), bias=bias), nn.GELU(), nn.Linear(int(hidden), D1, bias=bias))
             last = self.net[-1]
         else:
-            self.net = nn.Linear(D1, D1)
+            self.net = nn.Linear(D1, D1, bias=bias)
             last = self.net
         nn.init.zeros_(last.weight)
-        nn.init.zeros_(last.bias)
+        if last.bias is not None:
+            nn.init.zeros_(last.bias)
 
     def forward(self, z):
         return self.net(self.norm(z.float()))
@@ -139,6 +144,10 @@ def main_pass(m, hp, cu1, max1, valid=None):
                      valid: per row, how many leading chunks matter (the rest, padding, get zeros).
       {passes: k}    an approximation with k parallel passes: pass i+1 gets pass i's outputs, shifted by one chunk.
                      Exact for a row's first k chunks; with k = the row length it equals the loop.
+      center: true   the fed-back vector minus its average over the row's chunks so far (causal), so the loop can never
+                     act as a constant offset (2026-11-24: without it the loop became a large near-constant addition
+                     and the main network's outputs went flat, in HL-A-s0 and in the old two-pass run FB-h-s0)
+      lr_mult: f     the feedback layer learns f times as fast as the rest of the main network
     Every variant sees only earlier chunks (causal), lets the gradient through the whole chain, and computes the same
     thing at inference."""
     inner = m.backbone.main_network.main_network
@@ -151,12 +160,26 @@ def main_pass(m, hp, cu1, max1, valid=None):
     z = inner(hp, cu_seqlens=cu1, max_seqlen=max1)
     first = torch.zeros(hp.shape[0], dtype=torch.bool, device=hp.device)
     first[cu1[:-1].long()] = True
+    center = bool(cfg.get("center"))
     for _ in range(int(cfg.get("passes", 2)) - 1):
-        prev = torch.roll(z, 1, 0)
-        add = fb(prev).to(hp.dtype)
+        g = fb(z)
+        if center:
+            g = g - causal_row_mean(g, cu1)
+        add = torch.roll(g, 1, 0).to(hp.dtype)
         add = torch.where(first[:, None], torch.zeros_like(add), add)
         z = inner(hp + add, cu_seqlens=cu1, max_seqlen=max1)
     return z
+
+
+def causal_row_mean(g, cu1):
+    """Per packed row, the mean of g over the row's chunks up to and including each chunk."""
+    T = g.shape[0]
+    lens = (cu1[1:] - cu1[:-1]).long()
+    row = torch.repeat_interleave(torch.arange(lens.numel(), device=g.device), lens)
+    start = cu1[:-1].long()[row]
+    cs = torch.cat((g.new_zeros(1, g.shape[-1]).double(), g.double().cumsum(0)), 0)
+    idx = torch.arange(T, device=g.device)
+    return ((cs[idx + 1] - cs[start]) / (idx - start + 1).unsqueeze(-1).double()).to(g.dtype)
 
 
 def loop_pass(m, hp, cu1, valid=None):
@@ -165,17 +188,26 @@ def loop_pass(m, hp, cu1, valid=None):
     (earlier outputs cannot change: the network is causal)."""
     inner = m.backbone.main_network.main_network
     fb = m.feedback
+    center = bool((getattr(m, "_feedback_cfg", None) or {}).get("center"))
     cu = cu1.long().tolist()
     rows = [hp[cu[b]:cu[b + 1]] for b in range(len(cu) - 1)]
     n = [r.shape[0] if valid is None else min(int(valid[b]), r.shape[0]) for b, r in enumerate(rows)]
     T = max(n, default=0)
     assert T <= LOOP_MAX, f"the exact loop is for short rows (<= {LOOP_MAX} chunks), got {T}; use feedback passes"
     xs, zs = [[] for _ in rows], [[] for _ in rows]
+    gsum = [None for _ in rows]  # centred loop: running sum of the fed-back vectors of the row
     for t in range(T):
         act = [b for b in range(len(rows)) if n[b] > t]
         for b in act:
             x = rows[b][t:t + 1]
-            xs[b].append(x if t == 0 else x + fb(zs[b][-1]).to(x.dtype))
+            if t == 0:
+                xs[b].append(x)
+                continue
+            g = fb(zs[b][-1])
+            if center:
+                gsum[b] = g.float() if gsum[b] is None else gsum[b] + g.float()
+                g = g - (gsum[b] / t).to(g.dtype)
+            xs[b].append(x + g.to(x.dtype))
         cu_t = torch.arange(len(act) + 1, device=hp.device, dtype=torch.int32) * (t + 1)
         z = inner(torch.cat([torch.cat(xs[b], 0) for b in act], 0), cu_seqlens=cu_t, max_seqlen=t + 1)
         last = z[cu_t[1:].long() - 1]
@@ -436,8 +468,9 @@ def param_groups(m: HNetForCausalLM, mc: dict, wd: float):
     m.apply_lr_multiplier(mults)
     for name, mod in (("dec_emb", 0), ("surprise", 0), ("nest", -1), ("nextlat", -1), ("feedback", -1)):
         if getattr(m, name, None) is not None:
+            f = float((mc.get("feedback") or {}).get("lr_mult", 1.0)) if name == "feedback" else 1.0
             for p in getattr(m, name).parameters():
-                p._optim = {"lr_multiplier": mults[mod]}
+                p._optim = {"lr_multiplier": mults[mod] * f}
     groups = {}
     for name, p in m.named_parameters():
         if not p.requires_grad:

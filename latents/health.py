@@ -5,12 +5,15 @@ histogram, router rank, cuts after a space, cuts moved).
 batch_health (first eval batch):
   main_variation   variation of the main network's outputs between chunks, as a share of their mean square
   main_rank        effective rank (participation ratio) of the main network's outputs
+  main_state_norm  size of the main network's internal state right before its final normalisation (normal H-Net ~15)
+  main_state_const share of that state that is the same for every chunk
   swap_nats        loss increase (nats per byte) when every chunk's main-network state is swapped for a random other
                    chunk's: how much the decoder uses the main network
   enc_cos_next     cosine similarity of consecutive encoder byte states
   loop only:
   fb_weight        size (Frobenius norm) of the feedback layer's output weights
   fb_share         size of the fed-back vector relative to the chunk input it is added to
+  fb_variation     how much the fed-back vector differs between chunks (share of its mean square; ~0 = a constant)
   round_diff       main-network outputs at the trained number of rounds vs twice as many (relative difference)
   round_bpb_diff   bits per byte at twice the rounds minus at the trained rounds (this batch)
   loop_off_bpb     bits per byte with the loop switched off minus with it on (intact text, this batch)
@@ -49,11 +52,24 @@ def trained_rounds(mc):
 
 @torch.no_grad()
 def batch_health(model, x, y, mc, lat=None, out=None):
+    """out is ignored (the forward is rerun to see the main network's state before its final normalisation)."""
     mark = hole_mark(mc)
     keep = target_mask(y, mark)
-    if out is None:
+    cap = {}
+    iso = model.backbone.main_network.main_network
+    hk = iso.rmsnorm.register_forward_pre_hook(
+        lambda mod, args, kw: cap.__setitem__("pre", args[0].float() + (kw.get("residual") if kw.get("residual") is not None
+                                                                         else 0)), with_kwargs=True)
+    try:
         out = model_forward(model, x, mc, lat)
+    finally:
+        hk.remove()
     res = {}
+    r = cap["pre"].reshape(-1, cap["pre"].shape[-1]).float()
+    # the main network's internal state right before its final normalisation: size, and the share that is the same
+    # for every chunk (a huge constant there makes the normalised output the same for every chunk)
+    res["main_state_norm"] = float(r.norm(dim=-1).mean())
+    res["main_state_const"] = float(r.mean(0).pow(2).sum() / r.pow(2).sum(-1).mean().clamp(min=1e-12))
     z = out.z_full.float()
     res["main_variation"] = float((z - z.mean(0)).pow(2).sum(-1).mean() / z.pow(2).sum(-1).mean().clamp(min=1e-12))
     res["main_rank"] = participation_ratio(z[:20000])
@@ -74,6 +90,8 @@ def batch_health(model, x, y, mc, lat=None, out=None):
         pad = model.backbone.main_network.pad_dimension
         inp = out.chunks.float() if pad is None else torch.cat((out.chunks.float(), pad.float().expand(out.chunks.shape[0], -1)), -1)
         res["fb_share"] = float(add.norm(dim=-1).mean() / inp[~first].norm(dim=-1).mean().clamp(min=1e-12))
+        # how much the fed-back vector differs between chunks (share of its mean square): near 0 = a constant offset
+        res["fb_variation"] = float((add - add.mean(0)).pow(2).sum(-1).mean() / add.pow(2).sum(-1).mean().clamp(min=1e-12))
         k = trained_rounds(mc)
         if k is not None:
             with feedback_mode(model, rounds=2 * k):

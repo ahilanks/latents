@@ -1,0 +1,10 @@
+# Fixes for the flat main network of the hole recipe (2026-11-24; HL-A-s0 failed the health check and the loop carried
+# nothing into the holes). Same config and seed as HL-A-s0, one change each; checks and health figure as before.
+#   HL-C-s0   centred loop (fed-back vector minus its running row average)       configs/holes/loop_holes_center.yaml
+#   HL-S-s0   slow loop (feedback layer learns 10x slower)                         configs/holes/loop_holes_slow.yaml
+# Run:  python scripts/run_jobs.py scripts/holes_fix.txt
+python -m latents.train configs/holes/loop_holes_center.yaml name=HL-C-s0
+python -m latents.train configs/holes/loop_holes_slow.yaml name=HL-S-s0
+barrier
+sh python scripts/holes_checks.py runs/HL-C-s0 --plain runs/side-p06-plain-s0 > logs/holes/checks_HL-C-s0.txt 2>&1; python scripts/holes_checks.py runs/HL-S-s0 --plain runs/side-p06-plain-s0 > logs/holes/checks_HL-S-s0.txt 2>&1; true
+sh python scripts/health_fig.py --run runs/HL-C-s0 --plain runs/HP-plain-s0 --run_label "centred loop" > logs/holes/health_HL-C-s0.txt 2>&1; python scripts/health_fig.py --run runs/HL-S-s0 --plain runs/HP-plain-s0 --run_label "slow loop" > logs/holes/health_HL-S-s0.txt 2>&1; true

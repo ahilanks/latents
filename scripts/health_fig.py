@@ -31,6 +31,8 @@ PANELS = [
     ("main_variation", "main network: variation between chunks\n(% of mean square)",
      lambda v, p, ps: p is not None and v < 0.5 * p, "< ½ normal"),
     ("main_rank", "main network: effective rank", lambda v, p, ps: p is not None and v < 0.5 * p, "< ½ normal"),
+    ("main_state_const", "main network: share of its state that is\nthe same for every chunk (normal: 0.82 at the end)",
+     lambda v, p, ps: v > 0.95, "> 0.95"),
     ("swap_nats", "decoder's use of the main network\n(loss rise when chunk states are swapped)",
      lambda v, p, ps: p is not None and p > 0.002 and v < 0.3 * p, "< 0.3× normal"),
     ("enc_cos_next", "encoder: similarity of neighbouring bytes", lambda v, p, ps: v > 0.3, "> 0.3"),
@@ -135,7 +137,7 @@ def main():
         y0, y1 = ax.get_ylim()
         thr = {"compression_L1/L0": [(y0, 0.15), (0.25, y1)], "cuts_after_space": [(0.5, y1)],
                "router_rank_q": [(y0, 3)], "p_mid": [(0.74, y1)], "enc_cos_next": [(0.3, y1)],
-               "round_diff": [(0.05, y1)]}.get(key, [])
+               "round_diff": [(0.05, y1)], "main_state_const": [(0.95, y1)]}.get(key, [])
         for a_, b_ in thr:
             if b_ > a_:
                 ax.axhspan(max(a_, y0), min(b_, y1), color=RED, alpha=0.08, lw=0)

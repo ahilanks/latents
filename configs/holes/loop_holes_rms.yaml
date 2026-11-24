@@ -1,0 +1,7 @@
+# Fix 3 (2026-11-24, user: "in the latent feedback paper isn't it rmsnorm"): the loop in the form of Latent Feedback
+# (arXiv 2611.20404, eq. 1: u_t = e_t + W rms(h_{t-1})): RMSNorm and a projection without bias, so nothing in the loop
+# can add a constant (the original module, LayerNorm + Linear, has two such terms). W still starts at zero (the model
+# starts as the plain H-Net; the paper draws it with std 0.02). Otherwise as HL-A-s0.
+base: holes/loop_holes.yaml
+model:
+  feedback: {passes: 4, plain_frac: 0.15, norm: rms, bias: false}

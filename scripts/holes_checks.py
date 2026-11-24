@@ -40,14 +40,15 @@ DEV = "cuda" if torch.cuda.is_available() else "cpu"
 @contextlib.contextmanager
 def feedback_zeroed(model):
     last = model.feedback.net if isinstance(model.feedback.net, torch.nn.Linear) else model.feedback.net[-1]
-    keep = (last.weight.data.clone(), last.bias.data.clone())
-    last.weight.data.zero_()
-    last.bias.data.zero_()
+    ps = [p for p in (last.weight, last.bias) if p is not None]
+    keep = [p.data.clone() for p in ps]
+    for p in ps:
+        p.data.zero_()
     try:
         yield
     finally:
-        last.weight.data.copy_(keep[0])
-        last.bias.data.copy_(keep[1])
+        for p, k in zip(ps, keep):
+            p.data.copy_(k)
 
 
 def ac():
@@ -182,10 +183,14 @@ def main():
     print(f"[4] cuts: recipe {s_r}  plain {s_p}  share of plain's cuts also cut {agree:.3f}  holes {near}", flush=True)
 
     # 5. is the feedback used
-    hb = HL.batch_health(model, torch.from_numpy(iw[:16, :-1].astype(np.int64)).to(DEV),
-                         torch.from_numpy(iw[:16, 1:].astype(np.int64)).to(DEV), mc)
-    res["check5_feedback"] = {k2: hb[k2] for k2 in ("fb_weight", "fb_share", "loop_off_bpb", "round_diff", "round_bpb_diff")
-                              if k2 in hb}
+    with ac():
+        hb = HL.batch_health(model, torch.from_numpy(iw[:16, :-1].astype(np.int64)).to(DEV),
+                             torch.from_numpy(iw[:16, 1:].astype(np.int64)).to(DEV), mc)
+        hh = HL.batch_health(model, torch.from_numpy(hw[:16, :-1].astype(np.int64)).to(DEV),
+                             torch.from_numpy(hw[:16, 1:].astype(np.int64)).to(DEV), mc)
+    res["check5_feedback"] = {k2: hb[k2] for k2 in ("fb_weight", "fb_share", "fb_variation", "loop_off_bpb", "round_diff",
+                                                    "round_bpb_diff") if k2 in hb}
+    res["check5_feedback"]["holed_text"] = {k2: hh[k2] for k2 in ("fb_share", "fb_variation", "loop_off_bpb") if k2 in hh}
     res["check5_feedback"]["loop_off_bpb_full_val"] = c3["off"] - c3[f"r{k}"]
     res["check5_feedback"]["loop_off_bpb_after_holes"] = r["h/loop_gain_after"]
     print(f"[5] feedback: {res['check5_feedback']}", flush=True)

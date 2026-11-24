@@ -319,3 +319,64 @@ def test_reasoning_in_the_holes_trainer_and_eval_run():
             shutil.rmtree(ROOT / "runs" / n, ignore_errors=True)
         shutil.rmtree(ROOT / "data/_cpu_hr", ignore_errors=True)
         shutil.rmtree(ROOT / "data/_cpu_hrl", ignore_errors=True)
+
+
+# ----------------------------------------------------------------------------- loop fixes (2026-11-24)
+def test_centred_loop_is_exact_and_removes_any_constant():
+    m, mc = make(center=True)
+    m._feedback_cfg = dict(m._feedback_cfg, center=True)
+    x = torch.tensor([list(b"\xfeab cd \x03 ef gh ij \x03\x03\x03 kl mn op qr st") * 2] * 2)
+    with torch.no_grad():
+        with feedback_mode(m, mode="loop"):
+            out = forward_lm(m, x, opts={"holes": 3})
+        Tn = int((out.cu1[1:] - out.cu1[:-1]).max())
+        with feedback_mode(m, rounds=Tn):
+            full = forward_lm(m, x, opts={"holes": 3}).logits
+        assert torch.allclose(out.logits, full, atol=2e-4)
+        # a feedback layer that only outputs a constant (weights 0, bias b) adds nothing once centred (text without
+        # holes: at an untrained hole slot the input is exactly zero and the first norm blows up float rounding)
+        torch.nn.init.zeros_(m.feedback.net.weight)
+        torch.nn.init.normal_(m.feedback.net.bias, std=1.0)
+        y = torch.randint(4, 254, (2, 96))
+        a = forward_lm(m, y).logits
+        with feedback_mode(m, rounds=1):
+            b = forward_lm(m, y).logits
+    assert torch.allclose(a, b, atol=1e-5)
+
+
+def test_causal_row_mean():
+    g = torch.tensor([[1.0], [3.0], [5.0], [10.0], [20.0]])
+    cu = torch.tensor([0, 3, 5], dtype=torch.int32)
+    assert torch.allclose(M.causal_row_mean(g, cu).flatten(), torch.tensor([1.0, 2.0, 3.0, 10.0, 15.0]))
+
+
+def test_slow_loop_learning_rate():
+    from latents.models import param_groups
+    m, mc = make(lr_mult=0.1)
+    groups, mults = param_groups(m, mc, 0.1)
+    g = next(g for g in groups if any(n.startswith("feedback.") for n in g["names"]))
+    assert abs(g["lr_mult"] - 0.1 * mults[-1]) < 1e-9
+
+
+def test_paper_form_of_the_loop_rms_no_bias():
+    """norm=rms, bias=False (Latent Feedback eq. 1): starts as the plain model, has no constant term, the loop is
+    exact, and every part gets gradient."""
+    m, mc = make(live=False, norm="rms", bias=False)
+    assert isinstance(m.feedback.norm, torch.nn.RMSNorm) and m.feedback.net.bias is None
+    x = torch.tensor([list(b"\\xfeab cd \\x03 ef gh ij \\x03\\x03\\x03 kl mn op qr st") * 2] * 2)
+    with torch.no_grad():
+        a = forward_lm(m, x, opts={"holes": 3}).logits
+        with feedback_mode(m, rounds=1):
+            b = forward_lm(m, x, opts={"holes": 3}).logits
+    assert torch.equal(a, b)
+    torch.nn.init.normal_(m.feedback.net.weight, std=0.3)
+    with torch.no_grad():
+        with feedback_mode(m, mode="loop"):
+            out = forward_lm(m, x, opts={"holes": 3})
+        Tn = int((out.cu1[1:] - out.cu1[:-1]).max())
+        with feedback_mode(m, rounds=Tn):
+            full = forward_lm(m, x, opts={"holes": 3}).logits
+    assert torch.allclose(out.logits, full, atol=2e-4)
+    out = model_forward(m, x, mc)
+    out.logits.float().pow(2).mean().backward()
+    assert float(m.feedback.net.weight.grad.abs().sum()) > 0 and float(m.feedback.norm.weight.grad.abs().sum()) > 0
