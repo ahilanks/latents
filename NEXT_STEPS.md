@@ -57,24 +57,27 @@ stays the long-term north star, not what this plan does.
 | run | what | why |
 |---|---|---|
 | A | loop + holes | the recipe |
-| B | holes, no loop | control: the hole slot is only an extra position later chunks can attend to (a "pause" slot). Says whether the loop adds anything. |
-| plain | existing `side-p06-plain-s0`, 1.362 bits per byte | no holes, no loop |
+| plain | existing `side-p06-plain-s0` (1.362 bits per byte) and its written-reasoning fine-tunes (84–89%) | **the control** (user, 2026-11-23): everything is judged against the normal H-Net of the same size; already trained, no new run |
+| B (later) | holes, no loop | only if A beats plain: says whether the gain comes from the loop or from the holes alone (a hole slot without the loop is an extra position later chunks can attend to, a "pause" slot) |
 
 A costs about 2× a plain run (the main network runs 4 times; it is about a third of a plain step), so ~25–30 min on
-the 2× H100 pod; B about the same as plain (~12 min). One GPU each.
+one H100.
 
 ### Checks after pretraining (no training)
 1. **Is it really the loop?** 4 rounds vs 16 rounds vs the exact loop on short rows: outputs and bits per byte must
    agree (Latent Feedback: 4 vs 16 rounds differ by 0.00007 in loss). If they do not, fix this first (more rounds).
-2. **Does the loop fill holes?** Bits per byte on the bytes right after holes, A vs B, on the same holes.
+2. **Does the loop fill holes?** Bits per byte on the bytes right after holes, A as trained vs A with the loop switched
+   off at test time (feedback zeroed), on the same holes. Free, no extra run. (The plain H-Net never saw holes, so it is
+   not a fair reference on holed text; B is, if it is run later.)
 3. **Compression on intact text:** A and B vs plain (1.362). Expect no gain at this size: Latent Feedback gains only
    with ~75+ tokens of text per parameter on one pass over the data, and we have ~4.
 4. **Cuts:** pictures and cut rate vs plain, including next to holes.
 5. **Is the feedback used?** Size of the feedback layer's weights; zero it at test time and see what changes.
 
-**Stop rule:** if A does not fill holes better than B, the loop carries nothing; diagnose with check 5 before going on.
+**Stop rule:** if switching the loop off barely changes A's bits per byte after holes, the loop carries nothing;
+diagnose with check 5 before going on.
 
-### Reasoning (from A, B and plain)
+### Reasoning (from A, against plain)
 1. **Written reasoning fine-tune** (the usual arithmetic task, `task/arith_plain.yaml`): plain 0.6B gets 84–89%.
    Checks that written reasoning is not hurt.
 2. **Thoughts as holes:** the same fine-tune with written steps replaced by markers (3 per deleted step, the count read
@@ -83,12 +86,12 @@ the 2× H100 pod; B about the same as plain (~12 min). One GPU each.
    the exact loop.
    - Measure: the first hidden value right at each stage; answers with all thoughts; no-thoughts control (markers
      removed); by number of steps; longer problems (2–12 steps).
-   - **The key test:** Coconut stalled at the second hidden calculation (its carry digit at 14–22%). Does the loop get
-     past it, and does B (pause slots) not?
+   - **The key test:** Coconut on the normal H-Net stalled at the second hidden calculation (its carry digit at
+     14–22%). Does the loop get past it?
 3. **Answering directly** (no markers, no written steps): plain and the old loop both got 3.5%.
 
 ### What would count as working
-- Pretraining: check 1 passes, A fills holes better than B, compression within ~0.01 of plain.
+- Pretraining: check 1 passes, switching the loop off clearly hurts A after holes, compression within ~0.01 of plain.
 - Reasoning: two or more hidden calculations learned, and accuracy with thoughts approaching written reasoning.
 - Then, and only then: seeds, 3B bytes, harder tasks.
 
