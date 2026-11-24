@@ -96,6 +96,38 @@ diagnose with check 5 before going on.
    ProntoQA / ProsQA, the language tasks of the Coconut paper. Short sentences, so the 0.6B model can learn it;
    2–6 hops in training, longer at test. Plain H-Net written-reasoning fine-tune as the reference.
 
+### H-Net health during training (user, 2026-11-23): must look like normal training
+Checked at every eval in pretraining **and** in the reasoning fine-tunes, side by side with the plain H-Net at the same
+step (pretraining: `side-p06-plain-s0`'s `metrics.jsonl`; fine-tunes: the plain written-reasoning fine-tunes `Cc-p06*`;
+both on HF). One health figure per update, recipe vs plain. If a number leaves plain's range, stop and fix it before
+reading any accuracy.
+
+| what | plain H-Net at 0.6B (end of pretraining) | alarm |
+|---|---|---|
+| bits per byte on web text | 1.362 | > plain + 0.03 at the same step (the existing early-kill margin) |
+| cut rate | ~0.20 | outside 0.15–0.25 |
+| where cuts land: share right after a space; edge precision; space recall | 0.11 after a space | drifts toward a whitespace splitter (> 0.5 after a space) |
+| how decisive the router is: histogram of cut probabilities | moderate, cut-side median ~0.5 | piling at 0/1, or 74%+ at 0.4–0.5 |
+| router projection rank q / k | 9.7 / 8.6 | < 3 (ours collapsed to 1.0, a one-feature whitespace detector) |
+| cuts moved between evals | from plain's log | well above plain late in training |
+| main-network outputs: variation between chunks, effective rank | 10.8% of mean square, rank 16 | big drop (NextLat flattened them to 0.4%, rank 1.5) |
+| how much the decoder uses the main network: loss increase when each chunk's state is swapped for another's | 0.015 nats per byte | near zero (main network disconnected) |
+| encoder: similarity of consecutive byte states | cos 0.03 | high (runs that lost their cuts had 0.56–0.97) |
+| gradient norm, loss spikes | from plain's log | spikes plain does not have |
+| cut pictures on the same text | word-like, context-dependent | merging, wandering, or one cut per space |
+
+New for the loop: round 4 vs round 8 agreement at every eval, and the size of the feedback layer's weights.
+
+In the reasoning fine-tunes, additionally:
+- The same panel on web text: fine-tuning must not break pretraining health any more than plain's fine-tune does.
+- On the reasoning text: cut rate on the question and on the rest separately, share of cuts unchanged from the
+  pretrained model, cuts moved per eval (`scripts/cut_drift.py`), against plain's written-reasoning fine-tune.
+
+To build: the missing metrics in `latents/train.py` `evaluate` (main-network variation and rank, the swap test, encoder
+similarity, round agreement, feedback size; the rest is logged already: bits per byte, cut rate, edge precision, space
+recall, cut-probability histogram, router rank, cuts after a space, cuts moved) and a script that draws the health
+figure, recipe vs plain over steps.
+
 ### What would count as working
 - Pretraining: check 1 passes, switching the loop off clearly hurts A after holes, compression within ~0.01 of plain.
 - Reasoning: answers right with thoughts approaching written reasoning, on arithmetic past two hidden steps and on
