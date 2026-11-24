@@ -51,7 +51,7 @@ except ImportError:  # pragma: no cover
     pass
 
 from latents import flops as flops_lib  # noqa: E402
-from latents.models import build_model, feedback_mode, hole_mark, model_forward, param_groups, ratio_loss  # noqa: E402
+from latents.models import build_model, feedback_mode, feedback_normuon, hole_mark, model_forward, param_groups, ratio_loss  # noqa: E402
 from latents import latent as latent_lib  # noqa: E402
 from latents import health as health_lib  # noqa: E402
 from latents.holes import holed_window, render_cuts, target_mask  # noqa: E402
@@ -527,6 +527,15 @@ def main(argv):
     opt = torch.optim.AdamW(opt_groups, lr=tc["lr"], betas=(0.9, 0.95), eps=1e-8, fused=DEV.startswith("cuda"))
     broadcast_state(model, *( [lat] if lat is not None else []))
     train_params = [p for g in opt.param_groups for p in g["params"]]
+    fo = feedback_normuon(mc)
+    nm = None
+    if fo:  # Latent Feedback's optimizer for the feedback matrix W (their lr, weight decay, beta2, momentum warmup)
+        from latents.normuon import NorMuon
+        w_fb = [p for n, p in model.named_parameters() if n.startswith("feedback.") and p.ndim == 2]
+        nm = NorMuon(w_fb, lr=float(fo["lr"]), weight_decay=float(fo.get("wd", 0.0)), momentum=0.95,
+                     momentum_start=0.85, momentum_warmup_steps=int(fo.get("momentum_warmup", 300)),
+                     beta2=float(fo.get("beta2", 0.95)))
+        train_params = train_params + w_fb
     n_params = sum(p.numel() for p in model.parameters())
 
     est_fwd = flops_lib.model_fwd_per_byte(mc)
@@ -606,6 +615,9 @@ def main(argv):
         r_scale = 1.0 if rw <= 0 else 0.1 + 0.9 * min(1.0, step / (rw * total_steps))
         for pg, g in zip(opt.param_groups, groups):
             pg["lr"] = tc["lr"] * g["lr_mult"] * lr_scale * (r_scale if g.get("router") else 1.0)
+        if nm is not None:
+            for pg in nm.param_groups:
+                pg["lr"] = float(fo["lr"]) * lr_scale
         x_all, y_all = next(it)
         stats = {}
         f_step = 0.0
@@ -653,6 +665,9 @@ def main(argv):
         cemax = max(cemax, float(stats["ce"]))
         opt.step()
         opt.zero_grad(set_to_none=True)
+        if nm is not None:
+            nm.step()
+            nm.zero_grad(set_to_none=True)
         if lat is not None:
             lat.after_step(model, step, total_steps)
         cum_flops += f_step * world

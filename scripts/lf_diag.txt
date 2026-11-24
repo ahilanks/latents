@@ -1,0 +1,14 @@
+# Diagnosis of the loop collapse with Latent Feedback's recipe only (2026-11-24, user: "only do what latent feedback
+# does; if you can't diagnose the problem fully look at their codebase/paper and if needed do their run too").
+# One seed, 0.6B bytes of web text.
+#   HL-L-s0       the H-Net with Latent Feedback's loop complete (its loop form, pass mix, detached first pass and
+#                 NorMuon for W; NOT END TO END)                                         configs/holes/loop_holes_lf.yaml
+#   LF-fb-s0      their run: their 60M Transformer with the loop and their recipe, on our bytes   scripts/lf_train.py
+#   LF-plain-s0   the same Transformer without the loop (their Transformer arm's settings)
+# Question: does their loop keep their Transformer's top state as varied as without the loop (then the H-Net's
+# structure is the cause), and does the complete recipe keep the H-Net's main network healthy?
+# Run:  RUN_JOBS_MAX_PER_GPU=2 RUN_JOBS_MIN_FREE_GB=30 python scripts/run_jobs.py scripts/lf_diag.txt
+sh mkdir -p logs/lf
+python -m latents.train configs/holes/loop_holes_lf.yaml name=HL-L-s0
+python scripts/lf_train.py --name LF-fb-s0 --feedback 1
+python scripts/lf_train.py --name LF-plain-s0 --feedback 0 --lr 0.025192911532357438 --wd 0.0156

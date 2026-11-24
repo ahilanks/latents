@@ -7,13 +7,15 @@ Diagrams: `docs/holes_recipe.png` (the recipe), `docs/holes_vs_jepa.png` (why no
 Like the Coconut direction, this trains the whole model with the next-byte loss; the latent-only goal further down
 stays the long-term north star, not what this plan does.
 
-**Status (2026-11-23, 20:00 PT): pretraining checks failed, reasoning not run.** The loop switches the H-Net's main
-network off (outputs nearly the same for every chunk) in every variant whose fed-back vector grows as large as the
-chunk input, including both Latent-Feedback-faithful versions (end to end and detached); the only healthy variant (slow
-loop: feedback layer at 0.1× the learning rate) matches plain on compression (1.3666) but its loop carries nothing into
-holes (+0.0004 bpb). Details: `logistics.md`, entries of 2026-11-23 19:45 and 20:00 PT. Code for every step below is
-built (`latents/holes.py`, `latents/health.py`, `scripts/holes_*.py`, `configs/holes/`, `scripts/holes_ft.txt` for
-the fine-tunes).
+**Status (2026-11-23, 23:20 PT): loop collapse diagnosed; hole filling still fails; reasoning not run.** With Latent
+Feedback's complete recipe (their code matched exactly, NorMuon included) the H-Net's main network still goes flat from
+the start of training. Cause: the normal H-Net's main network is itself flat for its first ~250 updates (the decoder
+predicts from the encoder's states), and a loop trained from the start feeds that shared vector back as large as the
+chunk input, so it never recovers; their Transformer has no such phase. Their loop attached to the finished normal
+H-Net stays healthy, and with holes it fills them only barely (+0.0012 bpb after holes, 500 updates). Their own run on
+our bytes: their loop keeps their Transformer healthy but costs 0.18 bpb. Details: `logistics.md`, 2026-11-23 23:20 PT.
+Code for every step below is built (`latents/holes.py`, `latents/health.py`, `scripts/holes_*.py`, `configs/holes/`,
+`scripts/holes_ft.txt` for the fine-tunes; Latent Feedback's pieces `latents/normuon.py`, `latents/lf.py`).
 
 ### The idea
 - **The loop.** Every chunk's input to the main network also gets the previous chunk's final output, through a small

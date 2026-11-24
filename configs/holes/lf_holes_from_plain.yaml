@@ -1,0 +1,10 @@
+# The hole recipe with Latent Feedback's loop (its full recipe, loop_holes_lf.yaml: NOT END TO END) started from the
+# finished normal H-Net (train.init_from=runs/HP-plain-s0/final.pt), after the diagnosis of 2026-11-24: the loop
+# flattens the main network only from the start of training (the normal H-Net's main network is itself flat for its
+# first ~250 updates); attached to the finished normal H-Net it stays healthy (HC-lf-s0). 500 more updates of web text
+# with word holes; checks as for HL-A-s0 (scripts/holes_checks.py). Control for health: HC-plain-s0.
+base: holes/loop_holes_lf.yaml
+train:
+  total_bytes: 1.31072e+8
+  eval_every: 100
+  eval_at_start: true

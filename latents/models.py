@@ -84,7 +84,7 @@ def attach_extras(m, mc: dict, device="cuda"):
 def attach_feedback(m, mc, device="cuda"):
     """Add the feedback module described by mc["feedback"] to a model (also to a loaded plain model: it starts at zero)."""
     m.feedback = Feedback(mc["d_model"][-1], **{k: v for k, v in mc["feedback"].items()
-                                                if k not in ("passes", "mode", "plain_frac", "center", "lr_mult", "detach")}).to(device)
+                                                if k not in ("passes", "mode", "plain_frac", "center", "lr_mult", "detach", "optimizer")}).to(device)
     m._feedback_cfg = dict(mc["feedback"])
     return m
 
@@ -155,6 +155,8 @@ def main_pass(m, hp, cu1, max1, valid=None):
                      act as a constant offset (2026-11-24: without it the loop became a large near-constant addition
                      and the main network's outputs went flat, in HL-A-s0 and in the old two-pass run FB-h-s0)
       lr_mult: f     the feedback layer learns f times as fast as the rest of the main network
+      optimizer: {name: normuon, lr, wd, beta2, momentum_warmup}   the feedback matrices are trained by NorMuon
+                     (latents/normuon.py), as Latent Feedback trains W, instead of the H-Net's AdamW (latents/train.py)
       detach: true   as in Latent Feedback's code: every pass but the last runs without gradient and the fed-back state
                      is detached, so the gradient reaches the feedback layer only through the last pass. A blocked
                      path: NOT end to end (the labelled comparison).
@@ -477,6 +479,12 @@ def model_forward(model, x, mc: dict, lat=None, step_frac: float = 1.0, extra_op
     return out
 
 
+def feedback_normuon(mc):
+    """model.feedback.optimizer of a NorMuon-trained feedback layer, else None."""
+    fo = (mc.get("feedback") or {}).get("optimizer")
+    return fo if fo and fo.get("name") == "normuon" else None
+
+
 def _lr_mult(p, default):
     return getattr(p, "_optim", {}).get("lr_multiplier", default)
 
@@ -493,8 +501,8 @@ def param_groups(m: HNetForCausalLM, mc: dict, wd: float):
                 p._optim = {"lr_multiplier": mults[mod] * f}
     groups = {}
     for name, p in m.named_parameters():
-        if not p.requires_grad:
-            continue
+        if not p.requires_grad or (name.startswith("feedback.") and p.ndim == 2 and feedback_normuon(mc)):
+            continue  # feedback matrices under NorMuon: their own optimizer (latents/train.py)
         lr_mult = _lr_mult(p, 1.0)
         no_decay = p.ndim < 2 or "embeddings" in name or "dec_emb" in name or "level_emb" in name
         router = "routing_module" in name  # own group: model.router_wd / train.router_lr_warm act on it

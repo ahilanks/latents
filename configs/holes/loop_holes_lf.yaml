@@ -1,0 +1,13 @@
+# Latent Feedback's loop complete in the H-Net (2026-11-24, user: "only do what latent feedback does"): the paper's
+# loop and training as in loop_holes_paper.yaml (W rms(top) with no gain and no bias, W ~ N(0, 0.02); one pass on 15%
+# of updates and two on 85%, the first pass without gradient and the fed state detached; evaluated at 4+ rounds) and
+# now also its optimizer for W: NorMuon with the settings of their 60M run at about our data size
+# (feedback-60m-u12.5-f1: lr 0.0356, cautious weight decay 0.00987, beta2 0.987, momentum 0.85 -> 0.95 over 1200
+# updates). The rest of the H-Net keeps its own recipe (AdamW), as the normal H-Net it is compared with.
+# NOT END TO END (the detached first pass, as in their code). Health every 100 steps to see what goes first.
+base: holes/loop_holes_paper.yaml
+model:
+  feedback: {passes: 2, plain_frac: 0.15, norm: rms, bias: false, affine: false, init_std: 0.02, detach: true,
+             optimizer: {name: normuon, lr: 0.03562815716472544, wd: 0.00987, beta2: 0.987, momentum_warmup: 1200}}
+train:
+  eval_every: 100

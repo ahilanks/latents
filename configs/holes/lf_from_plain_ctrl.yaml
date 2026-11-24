@@ -1,0 +1,7 @@
+# Control of lf_from_plain.yaml: the same 500 more updates of the finished normal H-Net, without the loop.
+base: rdiag/h_base.yaml
+group: lf
+train:
+  total_bytes: 1.31072e+8
+  eval_every: 50
+  eval_at_start: true

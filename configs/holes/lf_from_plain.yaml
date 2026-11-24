@@ -1,0 +1,15 @@
+# Diagnosis (2026-11-24): Latent Feedback's loop (its full recipe, as loop_holes_lf.yaml, without holes) attached to
+# the finished normal H-Net (train.init_from=runs/HP-plain-s0/final.pt), whose main network is healthy (outputs 15%
+# different between chunks). Question: does the loop flatten a main network that is already healthy, or only stop
+# the early recovery (the normal H-Net's main network is flat at steps 50-125 too and recovers by step 750)?
+# 500 more updates of web text with the H-Net's schedule; control: lf_from_plain_ctrl.yaml (same, no loop).
+# NOT END TO END (the detached first pass, as in their code).
+base: rdiag/h_base.yaml
+group: lf
+model:
+  feedback: {passes: 2, plain_frac: 0.15, norm: rms, bias: false, affine: false, init_std: 0.02, detach: true,
+             optimizer: {name: normuon, lr: 0.03562815716472544, wd: 0.00987, beta2: 0.987, momentum_warmup: 1200}}
+train:
+  total_bytes: 1.31072e+8
+  eval_every: 50
+  eval_at_start: true
