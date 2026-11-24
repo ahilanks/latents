@@ -1,6 +1,10 @@
-# Fix 3 for the flat main network of the hole recipe (2026-11-24, user question): the loop as in Latent Feedback
-# (RMSNorm, no bias). Same config and seed as HL-A-s0, one change. Starts when a GPU has 60 GB free.
+# Loop as in Latent Feedback (2026-11-24, user: "look at that codebase and make sure we're applying those tricks").
+# Same config and seed as HL-A-s0. Starts when a GPU has 60 GB free.
+#   HL-R-s0   the paper's loop form (rms without gain, W without bias, std 0.02), our training: 4 rounds, end to end
+#   HL-P-s0   NOT END TO END: the paper's training exactly (first pass without gradient, fed state detached, 2 passes)
 # Run:  RUN_JOBS_MIN_FREE_GB=60 python scripts/run_jobs.py scripts/holes_fix2.txt
 python -m latents.train configs/holes/loop_holes_rms.yaml name=HL-R-s0
+python -m latents.train configs/holes/loop_holes_paper.yaml name=HL-P-s0
 barrier
-sh python scripts/holes_checks.py runs/HL-R-s0 --plain runs/side-p06-plain-s0 > logs/holes/checks_HL-R-s0.txt 2>&1; python scripts/health_fig.py --run runs/HL-R-s0 --plain runs/HP-plain-s0 --run_label "loop as in the paper" > logs/holes/health_HL-R-s0.txt 2>&1; true
+sh for r in HL-R-s0 HL-P-s0; do python scripts/holes_checks.py runs/$r --plain runs/side-p06-plain-s0 > logs/holes/checks_$r.txt 2>&1; done; true
+sh python scripts/health_fig.py --run runs/HL-R-s0 --plain runs/HP-plain-s0 --run_label "paper's loop form" > logs/holes/health_HL-R-s0.txt 2>&1; python scripts/health_fig.py --run runs/HL-P-s0 --plain runs/HP-plain-s0 --run_label "paper's training (not end to end)" > logs/holes/health_HL-P-s0.txt 2>&1; true

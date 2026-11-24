@@ -380,3 +380,22 @@ def test_paper_form_of_the_loop_rms_no_bias():
     out = model_forward(m, x, mc)
     out.logits.float().pow(2).mean().backward()
     assert float(m.feedback.net.weight.grad.abs().sum()) > 0 and float(m.feedback.norm.weight.grad.abs().sum()) > 0
+
+
+def test_paper_exact_detached_passes():
+    """detach (Latent Feedback's training, NOT end to end): same forward as the end-to-end passes, but the gradient
+    reaches the main network and the feedback only through the last pass. affine False and init_std 0.02: no gain in
+    the norm, W starts random."""
+    m, mc = make(live=False, norm="rms", bias=False, affine=False, init_std=0.02, passes=2)
+    assert m.feedback.norm.weight is None and 0.01 < float(m.feedback.net.weight.std()) < 0.03
+    x = torch.tensor([list(b"\\xfeab cd \\x03 ef gh ij \\x03\\x03 kl mn op qr st uv wx")] * 2)
+    with torch.no_grad():
+        e2e = forward_lm(m, x, opts={"holes": 3}).logits
+    m._feedback_cfg = dict(m._feedback_cfg, detach=True)
+    with torch.no_grad():
+        det = forward_lm(m, x, opts={"holes": 3}).logits
+    assert torch.allclose(e2e, det, atol=1e-6)
+    out = model_forward(m, x, mc)
+    out.logits.float().pow(2).mean().backward()
+    assert float(m.feedback.net.weight.grad.abs().sum()) > 0
+    assert sum(float(p.grad.abs().sum()) for p in m.backbone.main_network.parameters() if p.grad is not None) > 0

@@ -1,0 +1,8 @@
+# NOT END TO END (labelled comparison, 2026-11-24): Latent Feedback's training exactly as in its code
+# (ifm-ai/LoRM: lorm/model/feedback.py, lorm/train/algo.py SampledPasses, works/latent_feedback/configs/feedback.yaml):
+# the loop form of fix 3, two passes on 85% of updates and one on 15%, and the first pass runs WITHOUT gradient with
+# the fed-back state detached, so the gradient reaches the loop only through the last pass. Optimizer stays AdamW
+# (the paper trains W with NorMuon). Evaluated like the others (4+ rounds, exact loop).
+base: holes/loop_holes.yaml
+model:
+  feedback: {passes: 2, plain_frac: 0.15, norm: rms, bias: false, affine: false, init_std: 0.02, detach: true}

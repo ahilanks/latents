@@ -18,6 +18,7 @@ marker and at the byte after it, so a hole is exactly one chunk, and that chunk'
 the main network's input at a hole is nothing but the fed-back output of the chunk before (plus the constant padding
 every chunk input has). Forced boundaries are left out of the ratio loss (out.extras["forced"]).
 """
+import contextlib
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 
@@ -83,7 +84,7 @@ def attach_extras(m, mc: dict, device="cuda"):
 def attach_feedback(m, mc, device="cuda"):
     """Add the feedback module described by mc["feedback"] to a model (also to a loaded plain model: it starts at zero)."""
     m.feedback = Feedback(mc["d_model"][-1], **{k: v for k, v in mc["feedback"].items()
-                                                if k not in ("passes", "mode", "plain_frac", "center", "lr_mult")}).to(device)
+                                                if k not in ("passes", "mode", "plain_frac", "center", "lr_mult", "detach")}).to(device)
     m._feedback_cfg = dict(mc["feedback"])
     return m
 
@@ -92,12 +93,15 @@ class Feedback(nn.Module):
     """Maps the main network's last-layer output at chunk t to an addition to its input at chunk t+1. The output
     layer starts at zero, so a model with feedback starts exactly as the same model without it.
     norm="layer", bias=True: LayerNorm then Linear (the original module; both have a learned term that is the same
-    for every chunk). norm="rms", bias=False: W rms(z), the form of Latent Feedback (arXiv 2611.20404, eq. 1), with
-    nothing that can add a constant."""
+    for every chunk). norm="rms", bias=False: W rms(z), the form of Latent Feedback (arXiv 2611.20404, eq. 1, and its
+    code ifm-ai/LoRM lorm/model/feedback.py: F.rms_norm without a gain = affine False, W ~ N(0, 0.02) = init_std
+    0.02), with nothing that can add a constant. init_std 0: the output layer starts at zero."""
 
-    def __init__(self, D1, hidden=0, norm="layer", bias=True):
+    def __init__(self, D1, hidden=0, norm="layer", bias=True, affine=True, init_std=0.0):
         super().__init__()
-        self.norm = nn.LayerNorm(D1) if norm == "layer" else nn.RMSNorm(D1, eps=1e-5)
+        affine = bool(affine)
+        self.norm = (nn.LayerNorm(D1, elementwise_affine=affine) if norm == "layer"
+                     else nn.RMSNorm(D1, eps=1e-5, elementwise_affine=affine))
         bias = bool(bias)
         if hidden:
             self.net = nn.Sequential(nn.Linear(D1, int(hidden), bias=bias), nn.GELU(), nn.Linear(int(hidden), D1, bias=bias))
@@ -105,7 +109,10 @@ class Feedback(nn.Module):
         else:
             self.net = nn.Linear(D1, D1, bias=bias)
             last = self.net
-        nn.init.zeros_(last.weight)
+        if float(init_std) > 0:
+            nn.init.normal_(last.weight, std=float(init_std))
+        else:
+            nn.init.zeros_(last.weight)
         if last.bias is not None:
             nn.init.zeros_(last.bias)
 
@@ -148,6 +155,9 @@ def main_pass(m, hp, cu1, max1, valid=None):
                      act as a constant offset (2026-11-24: without it the loop became a large near-constant addition
                      and the main network's outputs went flat, in HL-A-s0 and in the old two-pass run FB-h-s0)
       lr_mult: f     the feedback layer learns f times as fast as the rest of the main network
+      detach: true   as in Latent Feedback's code: every pass but the last runs without gradient and the fed-back state
+                     is detached, so the gradient reaches the feedback layer only through the last pass. A blocked
+                     path: NOT end to end (the labelled comparison).
     Every variant sees only earlier chunks (causal), lets the gradient through the whole chain, and computes the same
     thing at inference."""
     inner = m.backbone.main_network.main_network
@@ -157,17 +167,27 @@ def main_pass(m, hp, cu1, max1, valid=None):
     cfg = getattr(m, "_feedback_cfg", None) or {}
     if cfg.get("mode", "passes") == "loop":
         return loop_pass(m, hp, cu1, valid)
-    z = inner(hp, cu_seqlens=cu1, max_seqlen=max1)
     first = torch.zeros(hp.shape[0], dtype=torch.bool, device=hp.device)
     first[cu1[:-1].long()] = True
     center = bool(cfg.get("center"))
-    for _ in range(int(cfg.get("passes", 2)) - 1):
-        g = fb(z)
+    detach = bool(cfg.get("detach"))
+    n = int(cfg.get("passes", 2))
+    with torch.no_grad() if (detach and n > 1) else contextlib.nullcontext():
+        z = inner(hp, cu_seqlens=cu1, max_seqlen=max1)
+
+    def fed(zz):
+        g = fb(zz)
         if center:
             g = g - causal_row_mean(g, cu1)
         add = torch.roll(g, 1, 0).to(hp.dtype)
-        add = torch.where(first[:, None], torch.zeros_like(add), add)
-        z = inner(hp + add, cu_seqlens=cu1, max_seqlen=max1)
+        return torch.where(first[:, None], torch.zeros_like(add), add)
+    if detach and n > 1:  # Latent Feedback's training: earlier passes without gradient, the fed state detached
+        with torch.no_grad():
+            for _ in range(n - 2):
+                z = inner(hp + fed(z), cu_seqlens=cu1, max_seqlen=max1)
+        return inner(hp + fed(z.detach()), cu_seqlens=cu1, max_seqlen=max1)
+    for _ in range(n - 1):
+        z = inner(hp + fed(z), cu_seqlens=cu1, max_seqlen=max1)
     return z
 
 
