@@ -1,0 +1,7 @@
+# The normal 0.6B H-Net again (= side-p06-plain-s0: same config and seed), evaluated every 250 steps with the full
+# health panel (latents/health.py), so the recipe's health numbers have plain values at the same steps. The control
+# for bits per byte stays side-p06-plain-s0 (1.362).
+base: rdiag/h_base.yaml
+group: holes
+train:
+  eval_every: 250

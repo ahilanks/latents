@@ -1,0 +1,16 @@
+# The hole recipe (NEXT_STEPS.md, plan of 2026-11-23): pretrain a true feedback loop with holes, then reason in the
+# holes. Fast iteration: one seed, 0.6B bytes of web text, against the normal H-Net of the same size.
+#   HL-A-s0      loop (4 parallel rounds, 15% plain updates) + word holes with marker bytes   configs/holes/loop_holes.yaml
+#   HP-plain-s0  the normal H-Net again (side-p06-plain-s0's config and seed) with the full health panel every 250 steps,
+#                so the recipe's health numbers have plain values at the same steps (bits per byte control stays
+#                side-p06-plain-s0, 1.362)
+# Then the checks in the plan's order (scripts/holes_checks.py) and the health figure (scripts/health_fig.py).
+# Stop rules (user, 2026-11-24): rounds must match the exact loop; switching the loop off must hurt the text after
+# holes; every health number must stay in the normal H-Net's range. Reasoning fine-tunes: scripts/holes_ft.txt.
+# Run:  python scripts/run_jobs.py scripts/holes.txt
+sh mkdir -p logs/holes logs/figs
+python -m latents.train configs/holes/loop_holes.yaml name=HL-A-s0
+python -m latents.train configs/holes/plain_health.yaml name=HP-plain-s0
+barrier
+sh python scripts/holes_checks.py runs/HL-A-s0 --plain runs/side-p06-plain-s0 > logs/holes/checks_HL-A-s0.txt 2>&1
+sh python scripts/health_fig.py --run runs/HL-A-s0 --plain runs/HP-plain-s0 > logs/holes/health_HL-A-s0.txt 2>&1

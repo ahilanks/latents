@@ -12,7 +12,13 @@ Project modules that live on the model (so they are saved with it and seen by th
   m.nextlat   latent transition model for the next-latent loss (model.nextlat, latents/nextlat.py)
   m.feedback  hidden-state feedback (model.feedback): the main network's last-layer output at one chunk is added to
               its input at the next chunk (see main_pass)
+
+Holes (model.holes = {mark: 3}, latents/holes.py): every byte equal to `mark` is a hole. Boundaries are forced at the
+marker and at the byte after it, so a hole is exactly one chunk, and that chunk's encoder vector is replaced by zeros:
+the main network's input at a hole is nothing but the fed-back output of the chunk before (plus the constant padding
+every chunk input has). Forced boundaries are left out of the ratio loss (out.extras["forced"]).
 """
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 
 import torch
@@ -76,7 +82,8 @@ def attach_extras(m, mc: dict, device="cuda"):
 
 def attach_feedback(m, mc, device="cuda"):
     """Add the feedback module described by mc["feedback"] to a model (also to a loaded plain model: it starts at zero)."""
-    m.feedback = Feedback(mc["d_model"][-1], **{k: v for k, v in mc["feedback"].items() if k not in ("passes", "mode")}).to(device)
+    m.feedback = Feedback(mc["d_model"][-1], **{k: v for k, v in mc["feedback"].items()
+                                                if k not in ("passes", "mode", "plain_frac")}).to(device)
     m._feedback_cfg = dict(mc["feedback"])
     return m
 
@@ -102,6 +109,26 @@ class Feedback(nn.Module):
 
 
 LOOP_MAX = 160  # longest row (in chunks) the exact loop accepts: its cost grows with the square of the length
+
+
+@contextmanager
+def feedback_mode(m, rounds=None, mode=None):
+    """Temporarily run the feedback another way: rounds=k parallel rounds (1 = the loop switched off: one plain pass,
+    nothing fed back), mode="loop" the exact loop. No-op for a model without feedback."""
+    if getattr(m, "feedback", None) is None or (rounds is None and mode is None):
+        yield
+        return
+    old = getattr(m, "_feedback_cfg", None)
+    new = dict(old or {})
+    if mode == "loop":
+        new["mode"] = "loop"
+    else:
+        new["mode"], new["passes"] = "passes", int(rounds)
+    m._feedback_cfg = new
+    try:
+        yield
+    finally:
+        m._feedback_cfg = old
 
 
 def main_pass(m, hp, cu1, max1, valid=None):
@@ -182,10 +209,15 @@ def lr_multipliers(mc: dict, n_gpt: float = 4.6) -> list:
     return out
 
 
-def ratio_loss(bp: RoutingModuleOutput, N: float) -> torch.Tensor:
-    """Paper eq. 10 (identical to hnet.utils.train.load_balancing_loss)."""
-    F_ = bp.boundary_mask.float().mean()
-    G_ = bp.boundary_prob[..., -1].float().mean()
+def ratio_loss(bp: RoutingModuleOutput, N: float, keep: torch.Tensor = None) -> torch.Tensor:
+    """Paper eq. 10 (identical to hnet.utils.train.load_balancing_loss). keep: only these positions count (holes: the
+    forced boundaries are left out, so they do not push the learned cuts elsewhere)."""
+    if keep is None:
+        F_ = bp.boundary_mask.float().mean()
+        G_ = bp.boundary_prob[..., -1].float().mean()
+    else:
+        F_ = bp.boundary_mask[keep].float().mean()
+        G_ = bp.boundary_prob[..., -1][keep].float().mean()
     return N / (N - 1) * ((N - 1) * F_ * G_ + (1 - F_) * (1 - G_))
 
 
@@ -260,6 +292,10 @@ def forward_lm(m: HNetForCausalLM, input_ids: torch.Tensor, pool_k: int = 0, det
       chunk_pool    hard (default: the boundary byte's encoder state) | mean (p-weighted segment mean, router brief 1A)
       router_fn     callable(h, cu) -> RoutingModuleOutput replacing the learned router (surprise / sampled)
       topdown       callable(hc, cu1, max1) -> (T1, D1) added to the main-net input (levels >= 2)
+      holes         marker byte value: markers are holes (forced one-byte chunks with a zero encoder vector; see top)
+      z_perm        seed: every chunk's decoder-facing main-network state is replaced by a random other chunk's (swap
+                    test: how much the decoder uses the main network)
+      row_lens      per row, how many leading bytes are real (the rest is padding): the exact loop skips padding chunks
     """
     o = opts or {}
     B, L = input_ids.shape
@@ -281,7 +317,16 @@ def forward_lm(m: HNetForCausalLM, input_ids: torch.Tensor, pool_k: int = 0, det
         bp = o["router_fn"](h, cu)
     else:
         bp = bb.routing_module(h, cu_seqlens=cu)
+    holes = None
+    if o.get("holes") is not None:
+        holes = (input_ids == int(o["holes"])).flatten()
+        if bool(holes.any()):
+            bp, forced = force_cuts(bp, holes, B, L)
+        else:
+            forced = torch.zeros_like(holes)
     hc, cu1, max1, _ = bb.chunk_layer(h, bp.boundary_mask, cu)
+    if holes is not None and bool(holes.any()):  # a hole's main-network input: only what is fed back
+        hc = torch.where(holes[bp.boundary_mask][:, None], torch.zeros_like(hc), hc)
     if o.get("chunk_pool") == "mean":  # router brief 1A: every byte's p gets gradient through its segment's weight
         hc = segment_pool(h, bp.boundary_prob[..., -1], bp.boundary_mask, cu).to(hc.dtype)
     if o.get("pred_ste"):
@@ -291,13 +336,20 @@ def forward_lm(m: HNetForCausalLM, input_ids: torch.Tensor, pool_k: int = 0, det
     hp = hc if inner.pad_dimension is None else torch.cat((hc, inner.pad_dimension.expand(hc.shape[0], -1)), dim=-1)
     if o.get("topdown") is not None:
         hp = hp + o["topdown"](hc, cu1, max1).to(hp.dtype)
-    z_full = main_pass(m, hp, cu1, max1)
+    valid = None
+    if o.get("row_lens") is not None:  # chunks that start inside each row's real bytes
+        mv = bp.boundary_mask.view(B, L)
+        valid = [int(mv[b, : int(n)].sum()) for b, n in enumerate(o["row_lens"])]
+    z_full = main_pass(m, hp, cu1, max1, valid=valid)
     z = z_full[..., : hc.shape[-1]]
     zsrc = z if main_out_fn is None else main_out_fn(z_full).to(z.dtype)
     if zero_main or o.get("floor"):
         zd = torch.zeros_like(zsrc)
     else:
         zd = zsrc.detach() if (detach_main or detach_trunk) else zsrc
+    if o.get("z_perm") is not None:
+        g = torch.Generator(device="cpu").manual_seed(int(o["z_perm"]))
+        zd = zd[torch.randperm(zd.shape[0], generator=g).to(zd.device)]
     prob, sel = bp.boundary_prob, bp.selected_probs
     if detach_trunk:
         prob, sel = prob.detach(), sel.detach()
@@ -312,8 +364,22 @@ def forward_lm(m: HNetForCausalLM, input_ids: torch.Tensor, pool_k: int = 0, det
     if getattr(m, "dec_emb", None) is not None:
         hd = hd + m.dec_emb(input_ids).flatten(0, 1).to(hd.dtype)
     hd = bb.decoder(hd, cu_seqlens=cu, max_seqlen=L)
-    return LMOut(logits=m.lm_head(hd).view(B, L, -1), bpred=[bp], chunks=hc, z=z, cu1=cu1, enc=enc,
-                 z_full=z_full, max1=max1, cu0=cu)
+    res = LMOut(logits=m.lm_head(hd).view(B, L, -1), bpred=[bp], chunks=hc, z=z, cu1=cu1, enc=enc,
+                z_full=z_full, max1=max1, cu0=cu)
+    if holes is not None:
+        res.extras["holes"], res.extras["forced"] = holes, forced
+    return res
+
+
+def force_cuts(bp: RoutingModuleOutput, holes: torch.Tensor, B: int, L: int):
+    """Boundaries at every marker byte and at the byte after it (same row), probability 1 there. Returns the new
+    routing output and the forced positions (flat bool)."""
+    hv = holes.view(B, L)
+    forced = (hv | F.pad(hv[:, :-1], (1, 0))).flatten()
+    prob = torch.where(forced[:, None], torch.tensor([0.0, 1.0], device=holes.device, dtype=bp.boundary_prob.dtype),
+                       bp.boundary_prob)
+    sel = torch.where(forced[:, None], torch.ones_like(bp.selected_probs), bp.selected_probs)
+    return RoutingModuleOutput(boundary_prob=prob, boundary_mask=bp.boundary_mask | forced, selected_probs=sel), forced
 
 
 def forward_opts(mc: dict, lat=None) -> dict:
@@ -321,12 +387,21 @@ def forward_opts(mc: dict, lat=None) -> dict:
     lc = lat.cfg if lat is not None else {}
     return dict(detach_trunk=bool(lc.get("detach_trunk", False)), floor=bool(mc.get("floor", False)),
                 pred_ste=lc.get("router_grad", "none") == "ste", chunk_pool=mc.get("chunk_pool", "hard"),
-                conf_grad=bool(mc.get("conf_grad", True)), smoothing=bool(mc.get("smoothing", True)))
+                conf_grad=bool(mc.get("conf_grad", True)), smoothing=bool(mc.get("smoothing", True)),
+                holes=hole_mark(mc))
 
 
-def model_forward(model, x, mc: dict, lat=None, step_frac: float = 1.0) -> LMOut:
-    """The one forward used by training, eval and scripts, so every path sees the same model."""
+def hole_mark(mc: dict):
+    """The marker byte of a model trained with holes (model.holes.mark), else None."""
+    h = mc.get("holes")
+    return int(h.get("mark", 3)) if h else None
+
+
+def model_forward(model, x, mc: dict, lat=None, step_frac: float = 1.0, extra_opts: dict = None) -> LMOut:
+    """The one forward used by training, eval and scripts, so every path sees the same model.
+    extra_opts: added forward options (z_perm, row_lens, ...; see forward_lm)."""
     opts = forward_opts(mc, lat)
+    opts.update(extra_opts or {})
     extras = {}
     is_hnet = len(mc["d_model"]) > 1
     if is_hnet and lat is not None and lat.needs_ema_states(mc):

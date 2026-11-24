@@ -1,0 +1,3 @@
+# Written-reasoning fine-tune on the multi-hop English task (latents/tasks_logic.py, data/task_logic), normal H-Net.
+base: holes/ft_plain_arith.yaml
+data_dir: data/task_logic

@@ -10,11 +10,22 @@ kill_after of training, if val BPB is worse than the reference run's val BPB at 
 kill_margin, stop, write summary.json with killed=true and exit with code 3.
 Manual kill: create runs/<name>/KILL (its text = the reason); the run stops the same way at its next eval, so the
 ladder gate sees a killed run instead of waiting forever for a summary.
+
+Holes and the loop (NEXT_STEPS.md, plan of 2026-11-23; latents/holes.py, latents/health.py):
+  train.holes = {rate: 0.1, max_run: 3}   delete about 10% of the words of each training window in runs of 1-3, one
+                                          marker byte per deleted word (model.holes = {mark: 3} makes the model treat
+                                          markers as holes); no loss on predicting a marker
+  model.feedback = {passes: 4, plain_frac: 0.15}   the loop trained in 4 parallel rounds; 15% of updates are one plain
+                                          round with nothing fed back
+  train.eval_at_start = true              an eval before the first step (fine-tunes: the cuts of the starting model)
+Every eval also logs the health numbers of latents/health.py (and, for models with holes, val_holes/...).
 """
+import contextlib
 import copy
 import json
 import math
 import os
+import random
 import sys
 import threading
 import queue
@@ -40,8 +51,10 @@ except ImportError:  # pragma: no cover
     pass
 
 from latents import flops as flops_lib  # noqa: E402
-from latents.models import build_model, model_forward, param_groups, ratio_loss  # noqa: E402
+from latents.models import build_model, feedback_mode, hole_mark, model_forward, param_groups, ratio_loss  # noqa: E402
 from latents import latent as latent_lib  # noqa: E402
+from latents import health as health_lib  # noqa: E402
+from latents.holes import holed_window, render_cuts, target_mask  # noqa: E402
 
 WANDB_ENTITY = os.environ.get("WANDB_ENTITY", "ahilan-uc-berkeley-electrical-engineering-computer-sciences")
 WANDB_PROJECT = os.environ.get("WANDB_PROJECT", "hnet-latents")
@@ -179,8 +192,9 @@ class Data:
             self.tok_bytes = None
             self.bytes_per_token = 1.0
 
-    def batches(self, B, L, seed):
-        """Uniformly random windows of L+1 tokens; background-thread prefetch."""
+    def batches(self, B, L, seed, holes=None):
+        """Uniformly random windows of L+1 tokens; background-thread prefetch. holes = {rate, max_run, mark}: words
+        deleted and replaced by marker bytes (latents/holes.py)."""
         q = queue.Queue(maxsize=8)
         rng = np.random.default_rng(seed)
         ar = np.arange(L + 1)
@@ -188,8 +202,14 @@ class Data:
 
         def worker():
             while True:
-                idx = rng.integers(0, len(self.train) - L - 1, size=B)
-                w = torch.from_numpy(self.train[idx[:, None] + ar].astype(np.int64))
+                if holes and holes.get("rate", 0) > 0:
+                    idx = rng.integers(0, len(self.train) - 2 * L - 128, size=B)
+                    w = torch.from_numpy(np.stack([holed_window(self.train, int(i), L + 1, rng, holes["rate"],
+                                                                int(holes.get("max_run", 3)), holes["mark"])
+                                                   for i in idx]).astype(np.int64))
+                else:
+                    idx = rng.integers(0, len(self.train) - L - 1, size=B)
+                    w = torch.from_numpy(self.train[idx[:, None] + ar].astype(np.int64))
                 q.put(w.pin_memory() if cuda else w)
 
         threading.Thread(target=worker, daemon=True).start()
@@ -231,7 +251,8 @@ def routing_losses(model, out, mc):
     """Ratio losses for learned routers (level 1 unless pooled / surprise) and nested levels."""
     loss, st = 0.0, {}
     if out.bpred and not mc.get("pool_k") and mc.get("router", "learned") != "surprise":
-        rl = ratio_loss(out.bpred[0], mc.get("N", 6))
+        forced = out.extras.get("forced")
+        rl = ratio_loss(out.bpred[0], mc.get("N", 6), keep=None if forced is None else ~forced)
         loss = loss + mc.get("alpha", 0.03) * rl
         st["ratio_loss"] = rl.detach()
     nest = getattr(model, "nest", None)
@@ -310,9 +331,13 @@ def grad_split(model, lat, mc, data, tc, n_windows=2):
     return out
 
 
+_START_BND = {}  # boundary mask of the first val batch at the first eval (fine-tunes: the starting model's cuts)
+
+
 @torch.no_grad()
-def evaluate(model, data, mc, tc, lat=None, max_windows=None, val=None, prefix="val"):
-    """val / prefix: evaluate another byte stream (an extra validation set) and name its metrics <prefix>/..."""
+def evaluate(model, data, mc, tc, lat=None, max_windows=None, val=None, prefix="val", health=True):
+    """val / prefix: evaluate another byte stream (an extra validation set) and name its metrics <prefix>/...
+    health: also the health numbers of latents/health.py on the first batch (one GPU only)."""
     rank, world = dist_info()
     model.eval()
     L = tc["seq_len"]
@@ -328,6 +353,8 @@ def evaluate(model, data, mc, tc, lat=None, max_windows=None, val=None, prefix="
     moved = None
     rstats = {}  # router rank and cuts after whitespace, first val batch (router review 2026-11-12)
     ws = torch.tensor(WS_BYTES, device=DEV)
+    mark = hole_mark(mc)
+    is_hnet = len(mc["d_model"]) > 1
     rm = getattr(getattr(model, "backbone", None), "routing_module", None)
     for i in range(0, len(mine), B):
         idx = mine[i:i + B]
@@ -351,9 +378,13 @@ def evaluate(model, data, mc, tc, lat=None, max_windows=None, val=None, prefix="
             if getattr(model, "nextlat", None) is not None:
                 for k, mval in model.nextlat.eval_metrics(out).items():
                     lat_acc[k] = lat_acc.get(k, 0.0) + mval
-        ce = F.cross_entropy(out.logits.float().flatten(0, 1), y.flatten(), reduction="sum")
+            if i == 0 and health and world == 1 and is_hnet:
+                rstats.update(health_lib.batch_health(model, x, y, mc, lat, out=out))
+                rstats.update(health_lib.question_cut_stats(x, out))
+        keep = target_mask(y, mark)
+        ce = (F.cross_entropy(out.logits.float().flatten(0, 1), y.flatten(), reduction="none") * keep.flatten()).sum()
         acc[0] += ce.double()
-        acc[1] += data.target_bytes(y).sum().double()
+        acc[1] += (data.target_bytes(y) * keep).sum().double()
         acc[7] += 1
         if out.bpred:
             p_hist += torch.histc(out.bpred[0].boundary_prob[..., -1].float(), bins=10, min=0.0, max=1.0).double()
@@ -363,6 +394,9 @@ def evaluate(model, data, mc, tc, lat=None, max_windows=None, val=None, prefix="
                 if prev is not None and prev.shape == m0.shape:
                     moved = ((m0 ^ prev).sum() / prev.sum().clamp(min=1)).item()
                 _PREV_BND[prefix] = m0
+                st0 = _START_BND.setdefault(prefix, m0)
+                if st0.shape == m0.shape:  # share of the first eval's cuts still there (fine-tunes: the starting model's)
+                    rstats["cuts_kept_from_start"] = float((m0 & st0).sum() / st0.sum().clamp(min=1))
             b = out.bpred[0].boundary_mask.view(x.shape)
             acc[2] += b.sum()
             acc[3] += b.numel()
@@ -413,14 +447,21 @@ def chunk_sample(model, data, mc, lat=None, n_bytes=1200):
     model.train()
     mask = out.bpred[0].boundary_mask.cpu().numpy()
     bs = data.val[:n_bytes].tobytes()
-    pieces, cur = [], bytearray()
-    for b, m in zip(bs, mask):
-        if m and cur:
-            pieces.append(bytes(cur).decode("utf-8", "replace"))
-            cur = bytearray()
-        cur.append(b)
-    pieces.append(bytes(cur).decode("utf-8", "replace"))
-    return "|".join(p.replace("�", "?") for p in pieces).replace(chr(254), "<s>")
+    return render_cuts(bs, mask)
+
+
+@torch.no_grad()
+def chunk_sample_holes(model, data, mc, n_bytes=1200, seed=0):
+    """The same text with holes (markers shown as '□'), cut by the model."""
+    h = mc.get("holes")
+    if data.bpe or not h:
+        return None
+    w = holed_window(data.val, 0, n_bytes, np.random.default_rng(seed), 0.1, 3, hole_mark(mc))
+    model.eval()
+    with autocast():
+        out = model_forward(model, torch.from_numpy(w.astype(np.int64))[None].to(DEV), mc)
+    model.train()
+    return render_cuts(w.tobytes(), out.bpred[0].boundary_mask.cpu().numpy(), hole_mark(mc))
 
 
 def ref_bpb_at(ref, step):
@@ -502,9 +543,13 @@ def main(argv):
         print(json.dumps(cfg["derived"], indent=1), flush=True)
         mlog = open(run_dir / "metrics.jsonl", "w")
     if use_wandb:
-        import wandb
-        wandb.init(entity=WANDB_ENTITY, project=WANDB_PROJECT, name=name, group=cfg.get("group"),
-                   tags=cfg.get("tags", []), notes=cfg.get("notes"), config=cfg, dir=str(ROOT / "runs"))
+        try:  # never lose a run to a W&B problem (metrics.jsonl is the record)
+            import wandb
+            wandb.init(entity=WANDB_ENTITY, project=WANDB_PROJECT, name=name, group=cfg.get("group"),
+                       tags=cfg.get("tags", []), notes=cfg.get("notes"), config=cfg, dir=str(ROOT / "runs"))
+        except Exception as e:
+            print("W&B off:", repr(e)[:300], flush=True)
+            use_wandb = False
 
     def log(d, step):
         if rank != 0:
@@ -518,7 +563,35 @@ def main(argv):
     mb = tc.get("micro_batch", B)
     assert B % (mb * world) == 0, f"batch {B} must split into micro-batches of {mb} on {world} ranks"
     accum = B // (mb * world)
-    it = data.batches(B // world, L, seed=tc.get("seed", 0) + 1000 * rank)
+    mark = hole_mark(mc)
+    th = tc.get("holes") or None
+    if th and th.get("rate", 0) > 0:
+        assert mark is not None, "train.holes needs model.holes (the marker byte the model treats as a hole)"
+        th = dict(th, mark=mark)
+    it = data.batches(B // world, L, seed=tc.get("seed", 0) + 1000 * rank, holes=th)
+    plain_frac = float((mc.get("feedback") or {}).get("plain_frac", 0) or 0)
+    fb_rng = random.Random(tc.get("seed", 0) + 77)  # the same draw on every rank
+    hole_wins = None
+    if mark is not None and is_hnet:
+        hole_wins = health_lib.holed_val(data.val, L, int(tc.get("hole_eval_windows", 64)), seed=0, mark=mark)
+    gmax, cemax, n_plain = 0.0, 0.0, 0
+
+    def run_eval(step):
+        ev = evaluate(model, data, mc, tc, lat=lat, max_windows=tc.get("eval_windows"))
+        for nm, arr in data.extra.items():
+            ev.update(evaluate(model, data, mc, tc, lat=lat, max_windows=tc.get("extra_val_windows", 64), val=arr,
+                               prefix=f"val_{nm}"))
+        if hole_wins is not None and world_size_1() and getattr(model, "feedback", None) is not None:
+            model.eval()
+            ev.update(health_lib.evaluate_holes(model, mc, hole_wins, tc.get("micro_batch", B), autocast, lat))
+            model.train()
+        return ev
+    if tc.get("eval_at_start"):
+        ev0 = run_eval(0)
+        ev0["flops"] = 0.0
+        log(ev0, 0)
+        if rank == 0:
+            print("[eval] step 0 " + " ".join(f"{k}={v:.5g}" for k, v in ev0.items()), flush=True)
     t0 = time.time()
     tlast = t0
     cum_flops = 0.0
@@ -536,12 +609,15 @@ def main(argv):
         x_all, y_all = next(it)
         stats = {}
         f_step = 0.0
+        plain_now = plain_frac > 0 and fb_rng.random() < plain_frac  # one plain round, nothing fed back
+        n_plain += plain_now
         for a in range(accum):
             x, y = x_all[a * mb:(a + 1) * mb], y_all[a * mb:(a + 1) * mb]
-            with autocast():
+            with autocast(), feedback_mode(model, rounds=1 if plain_now else None):
                 out = model_forward(model, x, mc, lat, step_frac=step / total_steps)
-                ce_tok = F.cross_entropy(out.logits.float().flatten(0, 1), y.flatten(), reduction="none")
-                ce = ce_tok.mean()
+                keep = target_mask(y, mark).flatten()
+                ce_tok = F.cross_entropy(out.logits.float().flatten(0, 1), y.flatten(), reduction="none") * keep
+                ce = ce_tok.sum() / keep.sum().clamp(min=1)
                 loss = ce
                 if is_hnet:
                     l_rt, st_rt = routing_losses(model, out, mc)
@@ -561,14 +637,20 @@ def main(argv):
             (loss / accum).backward()
             f_step += flops_lib.step_train_flops(mc, out, lat, getattr(model, "nest", None)) if is_hnet else \
                 3 * flops_lib.model_fwd_per_byte(mc) * x.numel() * data.bytes_per_token
-            nbytes = data.target_bytes(y).sum()
+            nbytes = (data.target_bytes(y).flatten() * keep).sum()
             stats["ce"] = stats.get("ce", 0) + ce.detach() / accum
             stats["bpb"] = stats.get("bpb", 0) + (ce_tok.detach().sum() / LN2 / nbytes) / accum
             if out.bpred:
                 stats["compression_L1/L0"] = stats.get("compression_L1/L0", 0) + out.bpred[0].boundary_mask.float().mean().detach() / accum
+                if "forced" in out.extras:  # cut rate without the forced cuts at holes
+                    fr = ~out.extras["forced"]
+                    stats["cut_rate_free"] = stats.get("cut_rate_free", 0) + out.bpred[0].boundary_mask[fr].float().mean().detach() / accum
+                    stats["hole_share"] = stats.get("hole_share", 0) + out.extras["holes"].float().mean().detach() / accum
                 stats["boundary_prob_mean"] = stats.get("boundary_prob_mean", 0) + out.bpred[0].boundary_prob[..., -1].float().mean().detach() / accum
         sync_grads(train_params)
         gn = torch.nn.utils.clip_grad_norm_(train_params, tc.get("clip", 1.0))
+        gmax = max(gmax, float(gn))  # largest gradient norm / loss since the last log line (spikes between logs)
+        cemax = max(cemax, float(stats["ce"]))
         opt.step()
         opt.zero_grad(set_to_none=True)
         if lat is not None:
@@ -583,12 +665,14 @@ def main(argv):
             dt = (now - tlast) / (tc.get("log_every", 50) if step else 1)
             tlast = now
             d = {f"train/{k}": (v.item() if torch.is_tensor(v) else v) for k, v in stats.items()}
-            d.update({"train/grad_norm": gn.item(), "lr": tc["lr"] * lr_scale, "lat_scale": lscale, "flops": cum_flops,
+            d.update({"train/grad_norm": gn.item(), "train/grad_norm_max": gmax, "train/ce_max": cemax,
+                      "train/plain_updates": n_plain / (step + 1), "lr": tc["lr"] * lr_scale, "lat_scale": lscale, "flops": cum_flops,
                       "bytes": cum_bytes, "perf/sec_per_step": dt, "perf/bytes_per_sec": bytes_per_step / dt,
                       "perf/mfu": f_step / dt / peak_flops()})
             if DEV.startswith("cuda"):
                 d["perf/max_mem_gb"] = torch.cuda.max_memory_allocated() / 2**30
             log(d, step)
+            gmax, cemax = 0.0, 0.0
             if rank == 0 and step % (tc.get("log_every", 50) * 10) == 0:
                 print(f"step {step}/{total_steps} " + " ".join(f"{k}={v:.4g}" for k, v in d.items() if isinstance(v, float)), flush=True)
             bad = torch.tensor(float(not math.isfinite(d["train/ce"])), device=DEV)
@@ -597,10 +681,7 @@ def main(argv):
                 killed = "non-finite loss"
                 break
         if (step > 0 and step % tc.get("eval_every", 1000) == 0) or step == total_steps - 1:
-            ev = evaluate(model, data, mc, tc, lat=lat, max_windows=tc.get("eval_windows"))
-            for nm, arr in data.extra.items():
-                ev.update(evaluate(model, data, mc, tc, lat=lat, max_windows=tc.get("extra_val_windows", 64), val=arr,
-                                   prefix=f"val_{nm}"))
+            ev = run_eval(step)
             if lat is not None and is_hnet and world_size_1():
                 ev.update(grad_split(model, lat, mc, data, tc))
             ev["flops"] = cum_flops
@@ -632,12 +713,19 @@ def main(argv):
     if killed:
         final = ev if ev else {}
     else:
-        final = evaluate(model, data, mc, tc, lat=lat, max_windows=tc.get("final_eval_windows"))
+        final = evaluate(model, data, mc, tc, lat=lat, max_windows=tc.get("final_eval_windows"), health=False)
         for nm, arr in data.extra.items():
             final.update(evaluate(model, data, mc, tc, lat=lat, max_windows=tc.get("final_extra_val_windows"), val=arr,
-                                  prefix=f"val_{nm}"))
+                                  prefix=f"val_{nm}", health=False))
+        if hole_wins is not None and world_size_1() and getattr(model, "feedback", None) is not None:
+            model.eval()
+            final.update(health_lib.evaluate_holes(model, mc, hole_wins, tc.get("micro_batch", B), autocast, lat))
+            model.train()
     if rank == 0:
         sample = None if killed else chunk_sample(model, data, mc, lat)
+        sample_h = None if killed else chunk_sample_holes(model, data, mc)
+        if sample_h:
+            open(run_dir / "chunks_holes.txt", "w").write(sample_h)
         summary = {"name": name, "group": cfg.get("group"), **{k: v for k, v in final.items()},
                    "train_flops": cum_flops, "train_bytes": cum_bytes, "n_params": n_params,
                    "wall_min": (time.time() - t0) / 60, "steps": total_steps, "world": world}

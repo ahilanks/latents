@@ -1,0 +1,40 @@
+# Reasoning fine-tunes of the hole recipe (NEXT_STEPS.md, plan of 2026-11-23, "Reasoning"), only after the
+# pretraining checks pass (scripts/holes.txt). One seed. Curriculum capped (user, 2026-11-23): stages 1-3, up to 3,000
+# steps each, a stage ends early when it is learned or plateaus; plus every step hidden at once.
+# Two tasks: arithmetic (data/task_arith) and multi-hop English (data/task_logic, latents/tasks_logic.py).
+#   HLc-*        written-reasoning fine-tune of the recipe (HL-A-s0), loop as pretrained        configs/holes/ft_loop_*.yaml
+#   HPc-*        the same for the normal H-Net (side-p06-plain-s0), with the health panel     configs/holes/ft_plain_*.yaml
+#                (HPc-arith = Cc-p06 rerun with health logging; Cc-p06 is re-scored too, to check the evaluator)
+#   HLh-*        thoughts as holes, curriculum stages 1-3 (3 markers per hidden step), from HLc-*
+#   HLh-*-all    every step hidden from the start
+#   HLh/HPh-*-direct   answering directly: every step deleted, no markers (no-thoughts control)
+# Answers are scored with scripts/holes_eval.py (exact loop for the recipe), 2000 test problems.
+# Run:  RUN_JOBS_MAX_PER_GPU=2 RUN_JOBS_MIN_FREE_GB=35 python scripts/run_jobs.py scripts/holes_ft.txt
+sh mkdir -p logs/holes
+python -m latents.train configs/holes/ft_loop_arith.yaml name=HLc-arith train.init_from=runs/HL-A-s0/final.pt
+python -m latents.train configs/holes/ft_plain_arith.yaml name=HPc-arith train.init_from=runs/side-p06-plain-s0/final.pt
+python -m latents.train configs/holes/ft_loop_logic.yaml name=HLc-logic train.init_from=runs/HL-A-s0/final.pt
+python -m latents.train configs/holes/ft_plain_logic.yaml name=HPc-logic train.init_from=runs/side-p06-plain-s0/final.pt
+barrier
+python scripts/holes_train.py --init runs/HLc-arith --name=HLh-arith --task arith --stages 1,2,3
+python scripts/holes_train.py --init runs/HLc-logic --name=HLh-logic --task logic --stages 1,2,3
+python scripts/holes_eval.py runs/HLc-arith --task arith --modes written --name=ev-HLc-arith
+python scripts/holes_eval.py runs/HPc-arith --task arith --modes written --name=ev-HPc-arith
+python scripts/holes_eval.py runs/Cc-p06 --task arith --modes written --name=ev-Cc-p06
+python scripts/holes_eval.py runs/HLc-logic --task logic --modes written --name=ev-HLc-logic
+python scripts/holes_eval.py runs/HPc-logic --task logic --modes written --name=ev-HPc-logic
+python scripts/holes_train.py --init runs/HLc-arith --name=HLh-arith-all --task arith --stages all
+python scripts/holes_train.py --init runs/HLc-logic --name=HLh-logic-all --task logic --stages all
+python scripts/holes_train.py --init runs/HLc-arith --name=HLh-arith-direct --task arith --stages all --marks 0
+python scripts/holes_train.py --init runs/HLc-logic --name=HLh-logic-direct --task logic --stages all --marks 0
+python scripts/holes_train.py --init runs/HPc-arith --name=HPh-arith-direct --task arith --stages all --marks 0
+python scripts/holes_train.py --init runs/HPc-logic --name=HPh-logic-direct --task logic --stages all --marks 0
+barrier
+python scripts/holes_eval.py runs/HLh-arith-stage3 --task arith --modes stage3,hidden --name=ev-HLh-arith
+python scripts/holes_eval.py runs/HLh-logic-stage3 --task logic --modes stage3,hidden --name=ev-HLh-logic
+python scripts/holes_eval.py runs/HLh-arith-all-all --task arith --modes hidden --name=ev-HLh-arith-all
+python scripts/holes_eval.py runs/HLh-logic-all-all --task logic --modes hidden --name=ev-HLh-logic-all
+python scripts/holes_eval.py runs/HLh-arith-direct-all --task arith --modes nothoughts --name=ev-HLh-arith-direct
+python scripts/holes_eval.py runs/HLh-logic-direct-all --task logic --modes nothoughts --name=ev-HLh-logic-direct
+python scripts/holes_eval.py runs/HPh-arith-direct-all --task arith --modes nothoughts --name=ev-HPh-arith-direct
+python scripts/holes_eval.py runs/HPh-logic-direct-all --task logic --modes nothoughts --name=ev-HPh-logic-direct

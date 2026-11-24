@@ -1,0 +1,11 @@
+# Written-reasoning fine-tune of the normal 0.6B H-Net (= task/arith_plain, as Cc-p06), with the health panel on the
+# web text at every eval and an eval before the first step (the starting model's cuts).
+base: task/arith_plain.yaml
+group: holes
+train:
+  micro_batch: 8
+  eval_every: 100
+  eval_at_start: true
+  extra_val: {web: ../fwe/val.u8}
+  extra_val_windows: 32
+  final_extra_val_windows: 64

@@ -1,0 +1,6 @@
+# The same written-reasoning fine-tune for the hole recipe: the loop in 4 rounds with 15% plain updates, as pretrained
+# (no holes in the reasoning text here; markers would still be holes).
+base: holes/ft_plain_arith.yaml
+model:
+  feedback: {passes: 4, plain_frac: 0.15}
+  holes: {mark: 3}
