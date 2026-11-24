@@ -84,15 +84,22 @@ diagnose with check 5 before going on.
    off the question, as in our Coconut runs), one step at a time as in Coconut (stage s replaces the first s steps).
    No loss on markers; loss on what follows. At test time: question, markers, then the model writes the answer, with
    the exact loop.
-   - Measure: the first hidden value right at each stage; answers with all thoughts; no-thoughts control (markers
-     removed); by number of steps; longer problems (2–12 steps).
-   - **The key test:** Coconut on the normal H-Net stalled at the second hidden calculation (its carry digit at
-     14–22%). Does the loop get past it?
+   - Measure: final answers right with all thoughts, against plain writing every step; no-thoughts control (markers
+     removed); longer problems (2–12 steps). Report whether it works (answers right), not sub-measures.
+   - **The key test:** Coconut on the normal H-Net never got past two hidden calculations. Does the loop?
+   - Fast cap: stages 1–3, ~3,000 steps each, stop a stage early when it plateaus; plus one run with every step hidden
+     at once (no curriculum).
 3. **Answering directly** (no markers, no written steps): plain and the old loop both got 3.5%.
+4. **Language reasoning (user, 2026-11-23: try it on language too).** The same three tests (written, thoughts as
+   holes, direct) on a multi-hop question task in plain English, generated like the arithmetic task: chains such as
+   "Every wumpus is a yumpus. Every yumpus is a zumpus. Max is a wumpus. Is Max a zumpus?", in the style of
+   ProntoQA / ProsQA, the language tasks of the Coconut paper. Short sentences, so the 0.6B model can learn it;
+   2–6 hops in training, longer at test. Plain H-Net written-reasoning fine-tune as the reference.
 
 ### What would count as working
 - Pretraining: check 1 passes, switching the loop off clearly hurts A after holes, compression within ~0.01 of plain.
-- Reasoning: two or more hidden calculations learned, and accuracy with thoughts approaching written reasoning.
+- Reasoning: answers right with thoughts approaching written reasoning, on arithmetic past two hidden steps and on
+  the language task.
 - Then, and only then: seeds, 3B bytes, harder tasks.
 
 ### To build (CPU tests first)
@@ -103,6 +110,7 @@ diagnose with check 5 before going on.
 - Eval: round-vs-exact-loop check; bits per byte after holes; cut pictures with markers; feedback size and zeroing.
 - Reasoning: fine-tune data with steps replaced by markers; generation that appends markers and then writes the answer
   with the exact loop.
+- Language task generator (multi-hop English questions, written steps, answers), next to `latents/tasks.py`.
 - `configs/holes/*.yaml`, job file `scripts/holes.txt`, tests `tests/cpu/test_holes.py`.
 
 ---
